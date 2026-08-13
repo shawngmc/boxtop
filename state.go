@@ -44,6 +44,7 @@ type monitorState struct {
 	lastPageSize int
 
 	procCPUPrev map[int]cpuSample // per-pid CPU sampling baseline
+	cmdCache    map[int]string    // per-pid COMMAND string, read once per process lifetime
 
 	cgroupCPUPrevUsageUsec int64
 	cgroupCPUPrevTime      time.Time
@@ -69,6 +70,7 @@ func newMonitorState() *monitorState {
 		sortReverse:  true,
 		lastPageSize: 10,
 		procCPUPrev:  make(map[int]cpuSample),
+		cmdCache:     make(map[int]string),
 	}
 }
 

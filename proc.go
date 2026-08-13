@@ -49,92 +49,128 @@ func listPIDs() []int {
 	return pids
 }
 
-// readProcess ports read_process(): returns (Process, ok) — ok is false
-// if the process vanished between listing and reading (normal race).
-func readProcess(pid int) (Process, bool) {
-	base := "/proc/" + strconv.Itoa(pid)
-
-	var rssKb int64
-	if data, err := os.ReadFile(base + "/status"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "VmRSS:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					rssKb, _ = strconv.ParseInt(fields[1], 10, 64)
-				}
-				break
-			}
-		}
-	} else if os.IsNotExist(err) {
-		return Process{}, false
-	}
-
-	// Short kernel-reported executable name (max 15 chars, no path/args) —
-	// same as Python's /proc/<pid>/comm read.
-	name := "?"
-	if data, err := os.ReadFile(base + "/comm"); err == nil {
-		name = sanitize(strings.TrimSpace(string(data)))
-	}
-
-	// Full command line (path + args), NUL-separated.
-	cmd := ""
-	if data, err := os.ReadFile(base + "/cmdline"); err == nil && len(data) > 0 {
-		replaced := strings.ReplaceAll(string(data), "\x00", " ")
-		cmd = sanitize(strings.TrimSpace(replaced))
-	}
-
-	// Kernel threads / some zombies have empty cmdline — fall back to the
-	// bracketed short name, same as the Python version.
-	if cmd == "" {
-		if name != "" && name != "?" {
-			cmd = "[" + name + "]"
-		} else {
-			cmd = "[unknown]"
-		}
-	}
-
-	return Process{PID: pid, RSSKb: rssKb, Name: name, Cmd: cmd}, true
-}
-
-// getProcesses ports get_processes(): all readable processes, unsorted.
-func getProcesses() []Process {
-	pids := listPIDs()
-	procs := make([]Process, 0, len(pids))
-	for _, pid := range pids {
-		if p, ok := readProcess(pid); ok {
-			procs = append(procs, p)
-		}
-	}
-	return procs
-}
-
-// readProcessCPUSeconds ports read_process_cpu_seconds(): cumulative
-// user+system CPU seconds for a process, from /proc/<pid>/stat. comm (the
-// 2nd field) can contain spaces/parens, so — same trick as the Python
-// version — we split on the LAST ')' to safely isolate the fields after
-// it rather than naively splitting the whole line on whitespace.
-func readProcessCPUSeconds(pid int) (float64, bool) {
+// readStatNameCPU reads /proc/<pid>/stat ONCE and returns both the short
+// kernel name (comm) and cumulative user+system CPU seconds. comm (the 2nd
+// field) can contain spaces and parentheses, so — same trick as the Python
+// version — we isolate the numeric tail by splitting after the LAST ')'.
+//
+// This single read now supplies the name that used to come from a separate
+// /proc/<pid>/comm read, so the per-pid read count drops.
+func readStatNameCPU(pid int) (name string, cpuSecs float64, ok bool) {
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return "", 0, false
+	}
+	return parseStatNameCPU(string(data))
+}
+
+// parseStatNameCPU is the pure parser behind readStatNameCPU, split out so
+// the tricky comm-with-parens/spaces handling can be unit-tested against
+// fixture lines without touching /proc.
+func parseStatNameCPU(raw string) (name string, cpuSecs float64, ok bool) {
+	lp := strings.IndexByte(raw, '(')
+	rp := strings.LastIndexByte(raw, ')')
+	if lp == -1 || rp == -1 || rp < lp || rp+1 >= len(raw) {
+		return "", 0, false
+	}
+	// comm is between the first '(' and last ')'; the kernel caps it at 15
+	// chars (no path/args), identical to what /proc/<pid>/comm reported.
+	name = sanitize(raw[lp+1 : rp])
+	if name == "" {
+		name = "?"
+	}
+
+	fields := strings.Fields(raw[rp+1:])
+	// fields[0] is field 3 (state); utime is field 14, stime is 15 —
+	// i.e. fields[11] and fields[12] once state (field 3) is index 0.
+	if len(fields) < 13 {
+		return name, 0, false
+	}
+	utime, e1 := strconv.ParseInt(fields[11], 10, 64)
+	stime, e2 := strconv.ParseInt(fields[12], 10, 64)
+	if e1 != nil || e2 != nil {
+		return name, 0, false
+	}
+	return name, float64(utime+stime) / clkTck, true
+}
+
+// readStatmRSS reads /proc/<pid>/statm and returns the resident set size in
+// kB. statm is a single short space-separated line whose 2nd field is the
+// RSS in pages — far cheaper to read and parse each tick than scanning the
+// ~50-line /proc/<pid>/status for its VmRSS line.
+//
+// Fidelity note: this is the page-count RSS (pages * PAGE_KB), which can
+// differ slightly from status's VmRSS anon/file/shmem breakdown. For a
+// per-process memory ranking the difference is immaterial; switch back to
+// parsing VmRSS out of /status if exact parity matters.
+func readStatmRSS(pid int) (int64, bool) {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/statm")
 	if err != nil {
 		return 0, false
 	}
-	raw := string(data)
-	idx := strings.LastIndex(raw, ")")
-	if idx == -1 || idx+1 >= len(raw) {
+	return parseStatmRSS(string(data))
+}
+
+// parseStatmRSS is the pure parser behind readStatmRSS.
+func parseStatmRSS(raw string) (int64, bool) {
+	fields := strings.Fields(raw)
+	if len(fields) < 2 {
 		return 0, false
 	}
-	afterComm := strings.Fields(raw[idx+1:])
-	// afterComm[0] is field 3 (state); utime is field 14, stime is 15 —
-	// i.e. afterComm[11] and afterComm[12] once state (field 3) is index 0.
-	if len(afterComm) < 13 {
+	pages, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil {
 		return 0, false
 	}
-	utime, e1 := strconv.ParseInt(afterComm[11], 10, 64)
-	stime, e2 := strconv.ParseInt(afterComm[12], 10, 64)
-	if e1 != nil || e2 != nil {
-		return 0, false
+	return pages * pageSizeKB, true
+}
+
+// cmdFor returns the full COMMAND string for pid, reading and caching
+// /proc/<pid>/cmdline on first sight and reusing the cached value on every
+// later tick. A process's cmdline is effectively immutable for its lifetime,
+// so this turns a per-tick read into a once-per-process read (dead pids are
+// evicted from the cache in buildProcesses).
+//
+// Empty cmdline (kernel threads, some zombies) falls back to the bracketed
+// short name, same as the Python version. A transient read *error* is not
+// cached, so a busy process that briefly refuses the read self-corrects next
+// tick instead of freezing on a fallback string.
+func cmdFor(pid int, name string, cache map[int]string) string {
+	if c, ok := cache[pid]; ok {
+		return c
 	}
-	return float64(utime+stime) / clkTck, true
+
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+	if err != nil {
+		return bracketName(name) // don't cache — retry next tick
+	}
+
+	cmd := parseCmdline(data, name)
+	cache[pid] = cmd
+	return cmd
+}
+
+// parseCmdline turns the NUL-separated raw /cmdline bytes into a display
+// string, falling back to the bracketed short name when it is empty (kernel
+// threads, some zombies). Split out from cmdFor so it can be unit-tested.
+func parseCmdline(data []byte, name string) string {
+	cmd := ""
+	if len(data) > 0 {
+		replaced := strings.ReplaceAll(string(data), "\x00", " ")
+		cmd = sanitize(strings.TrimSpace(replaced))
+	}
+	if cmd == "" {
+		cmd = bracketName(name)
+	}
+	return cmd
+}
+
+// bracketName is the empty-cmdline fallback: the short name in brackets, or
+// [unknown] when even the name is missing.
+func bracketName(name string) string {
+	if name != "" && name != "?" {
+		return "[" + name + "]"
+	}
+	return "[unknown]"
 }
 
 // cpuSample is one entry of the per-pid CPU sampling baseline that
@@ -144,24 +180,44 @@ type cpuSample struct {
 	t       time.Time
 }
 
-// sampleProcessCPU ports sample_process_cpu_pct(): mutates each Process's
-// CPUPct in place, using per-pid state carried in prev (this replaces the
-// module-level _proc_cpu_prev dict — see monitorState.procCPUPrev). It
-// also prunes prev entries for pids that no longer exist, same as the
-// Python version's cleanup loop, so long sessions don't leak memory.
-func sampleProcessCPU(procs []Process, coresLimit float64, prev map[int]cpuSample) {
+// buildProcesses reads every process once per tick and returns the full,
+// unsorted table with CPU% already sampled. It replaces the old
+// getProcesses()+sampleProcessCPU() two-pass design, which read four files
+// per pid (status, comm, cmdline, stat); this reads /stat (name + CPU) and
+// /statm (RSS) per tick, plus /cmdline only for pids not already cached —
+// roughly a 4x reduction in per-process I/O for a steady process set.
+//
+// prev carries the per-pid CPU baseline across frames (mutated in place) and
+// cmdCache carries the per-pid COMMAND strings; both are pruned of pids that
+// no longer exist so long sessions don't leak.
+func buildProcesses(coresLimit float64, prev map[int]cpuSample, cmdCache map[int]string) []Process {
 	now := time.Now()
-	seen := make(map[int]bool, len(procs))
+	pids := listPIDs()
+	procs := make([]Process, 0, len(pids))
+	seen := make(map[int]bool, len(pids))
 
-	for i := range procs {
-		pid := procs[i].PID
-		seen[pid] = true
-
-		cpuSecs, ok := readProcessCPUSeconds(pid)
-		if !ok {
+	for _, pid := range pids {
+		name, cpuSecs, statOK := readStatNameCPU(pid)
+		if !statOK {
+			// Process vanished between listing and reading, or its stat was
+			// unparseable — skip it (normal race).
 			continue
 		}
+		rssKb, rssOK := readStatmRSS(pid)
+		if !rssOK {
+			// Raced away between the two reads.
+			continue
+		}
+		seen[pid] = true
 
+		p := Process{
+			PID:   pid,
+			RSSKb: rssKb,
+			Name:  name,
+			Cmd:   cmdFor(pid, name, cmdCache),
+		}
+
+		// CPU% from the delta against the previous sample for this pid.
 		if old, hadPrev := prev[pid]; hadPrev && coresLimit > 0 {
 			dt := now.Sub(old.t).Seconds()
 			if dt > 0 {
@@ -169,15 +225,25 @@ func sampleProcessCPU(procs []Process, coresLimit float64, prev map[int]cpuSampl
 				if pct < 0 {
 					pct = 0
 				}
-				procs[i].CPUPct = &pct
+				p.CPUPct = &pct
 			}
 		}
 		prev[pid] = cpuSample{cpuSecs: cpuSecs, t: now}
+
+		procs = append(procs, p)
 	}
 
+	// Evict dead pids from the carried-over caches.
 	for pid := range prev {
 		if !seen[pid] {
 			delete(prev, pid)
 		}
 	}
+	for pid := range cmdCache {
+		if !seen[pid] {
+			delete(cmdCache, pid)
+		}
+	}
+
+	return procs
 }

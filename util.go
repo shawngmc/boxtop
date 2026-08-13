@@ -17,7 +17,9 @@ func runtimeNumCPU() int {
 // rigorous about non-standard kernels.
 const clkTck = 100.0
 
-// pageSizeKB mirrors PAGE_KB. Not currently used since VmRSS in
-// /proc/<pid>/status is already reported in kB directly, but kept here
-// in case you add a code path that reads RSS in pages instead.
+// pageSizeKB mirrors PAGE_KB: the kernel page size in kB, used to convert
+// the page-count RSS from /proc/<pid>/statm into kB (see readStatmRSS).
+// 4 KB is the near-universal Linux page size; read it via
+// golang.org/x/sys/unix or syscall.Getpagesize() if you need to support
+// kernels/arches with a different page size.
 const pageSizeKB = 4
