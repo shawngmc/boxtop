@@ -497,21 +497,45 @@ def render(max_bytes, curr_bytes):
     term_cols, term_rows = shutil.get_terminal_size(fallback=(100, 30))
 
     lines = []
-    lines.append("=" * 45)
-    lines.append(f" Memory Limit : {max_mb:>6} MB")
-    lines.append(f" Current Usage: {curr_mb:>6} MB")
-    lines.append(f" Available    : {(max_mb - curr_mb):>6} MB")
-    lines.append(f" Progress     : [{bar_colored}] {pct_colored}")
-    lines.append("-" * 45)
+
+    # Each header row's caption is built from two independently
+    # right-justified pieces — a section title (RAM/CPU, blank on
+    # continuation rows) and a field name (Limit/Available/etc.) — so a
+    # section's rows all line up under a shared right edge while only the
+    # first row of each section carries its title. Widths are derived from
+    # the actual caption text rather than hardcoded, so this stays correct
+    # if a caption's wording ever changes.
+    SECTION_WIDTH = max(len("RAM"), len("CPU")) + 1
+    LEFT_FIELD_CAPTIONS = ["Limit", "Current Usage", "Available", "Progress"]
+    LEFT_FIELD_WIDTH = max(len(c) for c in LEFT_FIELD_CAPTIONS) + 1
+    RIGHT_FIELD_CAPTIONS = ["Limit", "Progress"]
+    RIGHT_FIELD_WIDTH = max(len(c) for c in RIGHT_FIELD_CAPTIONS) + 1
+
+    # CPU's section sits far enough right that it clears the memory bar's
+    # width comfortably — tuned for terminals a bit wider than the ~80-100
+    # column default; on a narrower terminal this row will just run long
+    # (same graceful-non-clipping behavior the header block already had).
+    DIVIDER_COL = 62
+
+    def caption(section, field, field_width):
+        sec = f"{section:>{SECTION_WIDTH}}" if section else " " * SECTION_WIDTH
+        return f"{sec}{field:>{field_width}}"
+
+    mem_row1_left = f"{caption('RAM', 'Limit', LEFT_FIELD_WIDTH)} : {max_mb:>6} MB"
+    mem_row2_left = f"{caption('', 'Current Usage', LEFT_FIELD_WIDTH)} : {curr_mb:>6} MB"
+    mem_row3 = f"{caption('', 'Available', LEFT_FIELD_WIDTH)} : {(max_mb - curr_mb):>6} MB"
+    mem_row4 = f"{caption('', 'Progress', LEFT_FIELD_WIDTH)} : [{bar_colored}] {pct_colored}"
 
     cores_limit, cpu_source = read_cgroup_cpu_limit()
+    cpu_row1_right = cpu_row2_right = None
     if cores_limit:
         cpu_pct = sample_cpu_pct(cores_limit)
         source_label = {"quota": "cgroup quota", "cpuset": "cpuset",
                          "host": "host, no limit set"}.get(cpu_source, cpu_source)
-        lines.append(f" CPU Limit    : {cores_limit:>6.2f} cores ({source_label})")
+        cpu_row1_right = (f"{caption('CPU', 'Limit', RIGHT_FIELD_WIDTH)} : "
+                           f"{cores_limit:>6.2f} cores ({source_label})")
         if cpu_pct is None:
-            lines.append(" CPU Usage    : measuring...")
+            cpu_row2_right = f"{caption('', 'Progress', RIGHT_FIELD_WIDTH)} : measuring..."
         else:
             cpu_frac = max(0.0, min(1.0, cpu_pct / 100))
             cpu_bar_len = 30
@@ -519,10 +543,24 @@ def render(max_bytes, curr_bytes):
             cpu_bar = "█" * cpu_filled + "░" * (cpu_bar_len - cpu_filled)
             cpu_bar_colored = colorize(cpu_bar, cpu_frac, SUMMARY_STOPS)
             cpu_pct_colored = colorize(f"{cpu_pct:5.1f}%", cpu_frac, SUMMARY_STOPS)
-            lines.append(f" CPU Progress : [{cpu_bar_colored}] {cpu_pct_colored}")
+            cpu_row2_right = (f"{caption('', 'Progress', RIGHT_FIELD_WIDTH)} : "
+                               f"[{cpu_bar_colored}] {cpu_pct_colored}")
     else:
-        lines.append(" CPU Limit    : unavailable (no cgroup cpu controller found)")
+        cpu_row1_right = (f"{caption('CPU', 'Limit', RIGHT_FIELD_WIDTH)} : "
+                           f"unavailable (no cgroup cpu controller found)")
 
+    # CPU sits beside memory (in the horizontal space the terminal already
+    # has to spare) rather than as its own block underneath — pad the two
+    # memory lines that have a CPU counterpart out to a shared column so
+    # "CPU Limit"/"CPU Progress" line up under each other on the right.
+    lines.append(mem_row1_left.ljust(DIVIDER_COL) + "│" + cpu_row1_right)
+    if cpu_row2_right:
+        lines.append(mem_row2_left.ljust(DIVIDER_COL) + "│" + cpu_row2_right)
+    else:
+        lines.append(mem_row2_left)
+
+    lines.append(mem_row3)
+    lines.append(mem_row4)
     lines.append("=" * 45)
 
     # Fixed columns: PID(7) NAME(16) CPU%(7) RSS(9), remaining goes to COMMAND
