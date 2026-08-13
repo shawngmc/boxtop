@@ -9,6 +9,7 @@ psutil installed.
 """
 import time
 import os
+import re
 import shutil
 import sys
 import select
@@ -417,8 +418,20 @@ def fmt_mb(kb):
     return f"{kb / 1024:.1f}"
 
 
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+
+def vljust(s, width):
+    """Like str.ljust, but pads based on visible length — i.e. ignoring
+    invisible ANSI color escape sequences, which a plain ljust would
+    otherwise count as real characters and under-pad for."""
+    visible_len = len(_ANSI_RE.sub("", s))
+    pad = width - visible_len
+    return s + (" " * pad if pad > 0 else "")
+
+
 # ---------------------------------------------------------------------------
-# top-style interactive sorting
+# top-style interactive sorting and scrolling
 # ---------------------------------------------------------------------------
 # One key per column, plus 'r' to flip direction. Pressing the key for the
 # column that's already active flips its direction too — same as clicking
@@ -433,19 +446,70 @@ SORT_COLUMN_KEYS = {"m": "rss", "c": "cpu", "p": "pid", "n": "name"}
 # ascending (alphabetical reads naturally top-to-bottom).
 SORT_DEFAULT_REVERSE = {"rss": True, "cpu": True, "pid": False, "name": False}
 
+# Multi-byte escape sequences a terminal sends for arrow/paging/home/end
+# keys, mapped to symbolic names handle_key() understands. Covers both the
+# common xterm "CSI letter" forms (\x1b[A) and the VT/xterm "CSI number ~"
+# forms (\x1b[5~) since terminals vary on which they emit.
+ESCAPE_SEQUENCES = {
+    "\x1b[A": "UP", "\x1b[B": "DOWN",
+    "\x1b[5~": "PGUP", "\x1b[6~": "PGDN",
+    "\x1b[H": "HOME", "\x1b[1~": "HOME", "\x1b[7~": "HOME",
+    "\x1b[F": "END", "\x1b[4~": "END", "\x1b[8~": "END",
+}
+
 # Mutable interactive state — module-level since it needs to persist
 # across render() calls (one monitor process, one terminal session).
 sort_column = "rss"
 sort_reverse = True
 
+# How many rows into the (current sort order's) process list the visible
+# window starts at. This is a plain integer position, not a pid or other
+# identity — "best effort" scrolling means we hold this position steady
+# across refreshes even as the underlying list reshuffles or changes
+# length underneath it; render() clamps it to whatever's valid each frame
+# rather than trying to track a specific process across resorts.
+scroll_offset = 0
 
-def handle_sort_key(ch):
-    """Update the module-level sort state in response to a single
-    keypress. Unrecognized keys are ignored."""
-    global sort_column, sort_reverse
+# Row count of the process table in the most recently rendered frame, used
+# so PGUP/PGDN move by "one screenful" without render() needing to hand
+# that number back through handle_key's caller.
+_last_page_size = 10
 
-    ch = ch.lower()
-    if ch == "r":
+
+def handle_key(key):
+    """Update the module-level sort/scroll state in response to a single
+    keypress or symbolic key name (from ESCAPE_SEQUENCES). Unrecognized
+    keys are ignored."""
+    global sort_column, sort_reverse, scroll_offset
+
+    if key is None:
+        return
+
+    if key == "UP":
+        scroll_offset = max(0, scroll_offset - 1)
+        return
+    if key == "DOWN":
+        scroll_offset += 1
+        return
+    if key == "PGUP":
+        scroll_offset = max(0, scroll_offset - _last_page_size)
+        return
+    if key == "PGDN":
+        scroll_offset += _last_page_size
+        return
+    if key == "HOME":
+        scroll_offset = 0
+        return
+    if key == "END":
+        scroll_offset = 1 << 30  # clamped to the real max in render()
+        return
+
+    ch = key.lower()
+    if ch == "j":
+        scroll_offset += 1
+    elif ch == "k":
+        scroll_offset = max(0, scroll_offset - 1)
+    elif ch == "r":
         sort_reverse = not sort_reverse
     elif ch in SORT_COLUMN_KEYS:
         col = SORT_COLUMN_KEYS[ch]
@@ -500,15 +564,15 @@ def render(max_bytes, curr_bytes):
 
     # Each header row's caption is built from two independently
     # right-justified pieces — a section title (RAM/CPU, blank on
-    # continuation rows) and a field name (Limit/Available/etc.) — so a
+    # continuation rows) and a field name (Usage/Percent/etc.) — so a
     # section's rows all line up under a shared right edge while only the
     # first row of each section carries its title. Widths are derived from
     # the actual caption text rather than hardcoded, so this stays correct
     # if a caption's wording ever changes.
     SECTION_WIDTH = max(len("RAM"), len("CPU")) + 1
-    LEFT_FIELD_CAPTIONS = ["Limit", "Current Usage", "Available", "Progress"]
+    LEFT_FIELD_CAPTIONS = ["Usage", "Percent"]
     LEFT_FIELD_WIDTH = max(len(c) for c in LEFT_FIELD_CAPTIONS) + 1
-    RIGHT_FIELD_CAPTIONS = ["Limit", "Progress"]
+    RIGHT_FIELD_CAPTIONS = ["Limit", "Percent"]
     RIGHT_FIELD_WIDTH = max(len(c) for c in RIGHT_FIELD_CAPTIONS) + 1
 
     # CPU's section sits far enough right that it clears the memory bar's
@@ -521,10 +585,10 @@ def render(max_bytes, curr_bytes):
         sec = f"{section:>{SECTION_WIDTH}}" if section else " " * SECTION_WIDTH
         return f"{sec}{field:>{field_width}}"
 
-    mem_row1_left = f"{caption('RAM', 'Limit', LEFT_FIELD_WIDTH)} : {max_mb:>6} MB"
-    mem_row2_left = f"{caption('', 'Current Usage', LEFT_FIELD_WIDTH)} : {curr_mb:>6} MB"
-    mem_row3 = f"{caption('', 'Available', LEFT_FIELD_WIDTH)} : {(max_mb - curr_mb):>6} MB"
-    mem_row4 = f"{caption('', 'Progress', LEFT_FIELD_WIDTH)} : [{bar_colored}] {pct_colored}"
+    avail_mb = max_mb - curr_mb
+    mem_row1_left = (f"{caption('RAM', 'Usage', LEFT_FIELD_WIDTH)} : "
+                      f"{curr_mb}/{max_mb} MB (Used/Limit), {avail_mb} MB Free")
+    mem_row2_left = f"{caption('', 'Percent', LEFT_FIELD_WIDTH)} : [{bar_colored}] {pct_colored}"
 
     cores_limit, cpu_source = read_cgroup_cpu_limit()
     cpu_row1_right = cpu_row2_right = None
@@ -535,7 +599,7 @@ def render(max_bytes, curr_bytes):
         cpu_row1_right = (f"{caption('CPU', 'Limit', RIGHT_FIELD_WIDTH)} : "
                            f"{cores_limit:>6.2f} cores ({source_label})")
         if cpu_pct is None:
-            cpu_row2_right = f"{caption('', 'Progress', RIGHT_FIELD_WIDTH)} : measuring..."
+            cpu_row2_right = f"{caption('', 'Percent', RIGHT_FIELD_WIDTH)} : measuring..."
         else:
             cpu_frac = max(0.0, min(1.0, cpu_pct / 100))
             cpu_bar_len = 30
@@ -543,7 +607,7 @@ def render(max_bytes, curr_bytes):
             cpu_bar = "█" * cpu_filled + "░" * (cpu_bar_len - cpu_filled)
             cpu_bar_colored = colorize(cpu_bar, cpu_frac, SUMMARY_STOPS)
             cpu_pct_colored = colorize(f"{cpu_pct:5.1f}%", cpu_frac, SUMMARY_STOPS)
-            cpu_row2_right = (f"{caption('', 'Progress', RIGHT_FIELD_WIDTH)} : "
+            cpu_row2_right = (f"{caption('', 'Percent', RIGHT_FIELD_WIDTH)} : "
                                f"[{cpu_bar_colored}] {cpu_pct_colored}")
     else:
         cpu_row1_right = (f"{caption('CPU', 'Limit', RIGHT_FIELD_WIDTH)} : "
@@ -552,15 +616,17 @@ def render(max_bytes, curr_bytes):
     # CPU sits beside memory (in the horizontal space the terminal already
     # has to spare) rather than as its own block underneath — pad the two
     # memory lines that have a CPU counterpart out to a shared column so
-    # "CPU Limit"/"CPU Progress" line up under each other on the right.
+    # "CPU Limit"/"CPU Percent" line up under each other on the right.
+    # mem_row1_left is plain text (no ANSI codes) so a normal ljust is
+    # exact; mem_row2_left contains the colorized progress bar, whose
+    # invisible ANSI escape sequences would throw off a raw ljust, so it
+    # gets padded on its *visible* length instead via vljust.
     lines.append(mem_row1_left.ljust(DIVIDER_COL) + "│" + cpu_row1_right)
     if cpu_row2_right:
-        lines.append(mem_row2_left.ljust(DIVIDER_COL) + "│" + cpu_row2_right)
+        lines.append(vljust(mem_row2_left, DIVIDER_COL) + "│" + cpu_row2_right)
     else:
         lines.append(mem_row2_left)
 
-    lines.append(mem_row3)
-    lines.append(mem_row4)
     lines.append("=" * 45)
 
     # Fixed columns: PID(7) NAME(16) CPU%(7) RSS(9), remaining goes to COMMAND
@@ -590,11 +656,24 @@ def render(max_bytes, curr_bytes):
     sort_processes(procs)
     total_rss_kb = sum(p["rss_kb"] for p in procs)
 
-    # If we can't fit every process, reserve one more row for the "N more
-    # not shown" notice so the total still lands exactly on budget instead
-    # of pushing everything down by one line.
-    truncated = len(procs) > max_proc_rows
-    shown_rows = max_proc_rows - 1 if truncated else max_proc_rows
+    # If we can't fit every process, reserve one more row for the status
+    # line showing scroll position so the total still lands exactly on
+    # budget instead of pushing everything down by one line.
+    total_procs = len(procs)
+    truncated = total_procs > max_proc_rows
+    shown_rows = max(1, max_proc_rows - 1) if truncated else max_proc_rows
+    global scroll_offset, _last_page_size
+    _last_page_size = shown_rows
+
+    # Clamp the scroll position to whatever's valid for *this* frame's
+    # list length. This is deliberately "best effort": scroll_offset is
+    # just a row index into the current sort order, not a pointer to a
+    # specific process, so as the list reshuffles or changes length
+    # between frames (processes starting/exiting, a resort) the viewport
+    # holds roughly steady rather than tracking any one process around.
+    max_offset = max(0, total_procs - shown_rows)
+    scroll_offset = max(0, min(scroll_offset, max_offset))
+    visible_procs = procs[scroll_offset: scroll_offset + shown_rows]
 
     lines.append(header[:term_cols])
     lines.append(footer_rule)
@@ -605,7 +684,7 @@ def render(max_bytes, curr_bytes):
     # budget happens to be in use right now.
     max_kb = max_bytes / 1024 if max_bytes else 0
 
-    for p in procs[:shown_rows]:
+    for p in visible_procs:
         name = p["name"]
         if len(name) > name_width:
             name = name[: name_width - 1] + "…"
@@ -628,12 +707,15 @@ def render(max_bytes, curr_bytes):
         lines.append(line)
 
     if truncated:
-        lines.append(f" ... {len(procs) - shown_rows} more processes not shown ...")
+        first = scroll_offset + 1
+        last = scroll_offset + len(visible_procs)
+        lines.append(f" ... showing {first}-{last} of {total_procs} — scroll for more ...")
 
     lines.append(footer_rule)
-    lines.append(f" Processes: {len(procs):<5}  Sum of RSS: {fmt_mb(total_rss_kb)} MB"
+    lines.append(f" Processes: {total_procs:<5}  Sum of RSS: {fmt_mb(total_rss_kb)} MB"
                   f"  (cgroup usage may include cache/shared mem not in RSS)")
-    lines.append(" Ctrl+C exit | Sort: [m]em [c]pu [p]id [n]ame  [r]everse")
+    lines.append(" Ctrl+C exit | Sort: [m]em [c]pu [p]id [n]ame  [r]everse"
+                 " | Scroll: ↑↓/j/k PgUp/PgDn Home/End")
 
     # Join with CLR_EOL before each newline so leftover characters from a
     # longer previous line (e.g. a longer command string) get wiped even
@@ -658,9 +740,23 @@ def main():
     # collector) should just run on the plain timer instead of erroring.
     interactive = _RAW_MODE_AVAILABLE and sys.stdin.isatty()
     old_term_settings = None
+    stdin_fd = sys.stdin.fileno()
     if interactive:
-        old_term_settings = termios.tcgetattr(sys.stdin.fileno())
-        tty.setcbreak(sys.stdin.fileno())
+        old_term_settings = termios.tcgetattr(stdin_fd)
+        tty.setcbreak(stdin_fd)
+
+    def read_key_byte():
+        """Read exactly one byte straight from the fd via os.read(),
+        bypassing sys.stdin's internal buffering. That buffering is the
+        reason to avoid sys.stdin.read() here: it can silently pull extra
+        already-available bytes (e.g. the '[A' following an escape) into
+        its own buffer on the first read, so a later select() on the fd
+        finds nothing new waiting — the bytes are sitting in Python's
+        buffer, not the OS's — and a multi-byte sequence gets mistaken for
+        a single lone keypress. os.read() issues one real syscall per call
+        and never buffers ahead, so select() and these reads stay in sync.
+        Returns '' on EOF (stdin closed), same signal as the old code."""
+        return os.read(stdin_fd, 1).decode(errors="replace")
 
     sys.stdout.write(HIDE_CURSOR)
     try:
@@ -678,28 +774,48 @@ def main():
 
             if interactive:
                 # Wait up to `interval` seconds, but wake immediately if a
-                # key is pressed so sort changes feel instant rather than
-                # waiting out the rest of the refresh interval.
-                ready, _, _ = select.select([sys.stdin], [], [], interval)
+                # key is pressed so sort/scroll changes feel instant rather
+                # than waiting out the rest of the refresh interval.
+                ready, _, _ = select.select([stdin_fd], [], [], interval)
                 if ready:
-                    ch = sys.stdin.read(1)
+                    ch = read_key_byte()
                     if ch == "":
                         # stdin closed out from under us — fall back to a
                         # plain timer instead of busy-looping on selects
                         # that immediately return empty reads forever.
                         interactive = False
                         time.sleep(interval)
+                    elif ch == "\x1b":
+                        # Arrow/Page/Home/End keys arrive as a multi-byte
+                        # escape sequence, not a single keypress. A real
+                        # terminal sends the whole sequence in one burst,
+                        # so a short follow-up select is enough to tell
+                        # that apart from someone just pressing the lone
+                        # Escape key (which arrives with nothing behind it
+                        # and is otherwise ignored).
+                        seq = ch
+                        while len(seq) < 4:
+                            more, _, _ = select.select([stdin_fd], [], [], 0.05)
+                            if not more:
+                                break
+                            nxt = read_key_byte()
+                            if nxt == "":
+                                break
+                            seq += nxt
+                            if seq in ESCAPE_SEQUENCES:
+                                break
+                        handle_key(ESCAPE_SEQUENCES.get(seq))
                     elif ch.lower() == "q":
                         break
                     else:
-                        handle_sort_key(ch)
+                        handle_key(ch)
             else:
                 time.sleep(interval)
     except KeyboardInterrupt:
         pass
     finally:
         if interactive:
-            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_term_settings)
+            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_term_settings)
         sys.stdout.write(SHOW_CURSOR)
         sys.stdout.flush()
         print("\nExiting.")
