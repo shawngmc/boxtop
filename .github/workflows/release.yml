@@ -33,7 +33,7 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
-        run: go build -trimpath -ldflags="-s -w" -o boxtop-linux-${{ matrix.goarch }} .
+        run: go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o boxtop-linux-${{ matrix.goarch }} .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

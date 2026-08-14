@@ -50,13 +50,6 @@ instructions.
   columns, so wide (e.g. CJK) characters desync column alignment.
   `go-runewidth` is already a transitive dependency via tcell — use
   `runewidth.Truncate`/`runewidth.Width` instead.
-- **Flag parsing is hand-rolled.** `main.go` parses `os.Args[1]` directly
-  with no `--help`/`--version`. Moving to the stdlib `flag` package would
-  give free usage text and room for `--interval`, `--cgroup <path>`,
-  `--no-color`, etc.
-- **No version string.** Add a `var version = "dev"` set via
-  `-ldflags "-X main.version=..."` in the release workflow, and print it
-  on `--version`.
 - **Hardcoded to the running process's own cgroup.** `cgroup.go` always
   reads `/sys/fs/cgroup/...` for wherever boxtop itself is running. A
   `--cgroup <name-or-path>` flag would let boxtop run on the host and

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"strconv"
@@ -14,27 +15,34 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
-func main() {
-	interval := time.Second
-	colorblind := false
-	var intervalArg string
+// version is overridden at build time via -ldflags "-X main.version=...".
+var version = "dev"
 
-	// Hand-rolled rather than the flag package: there's only one boolean
-	// switch and one positional arg so far. Worth revisiting with `flag`
-	// (for free -h/--help) once more options land here.
-	for _, arg := range os.Args[1:] {
-		if arg == "--colorblind" || arg == "-c" {
-			colorblind = true
-			continue
-		}
-		intervalArg = arg
+func main() {
+	var colorblind, showVersion bool
+	flag.BoolVar(&colorblind, "colorblind", false, "use the colorblind-friendly palette")
+	flag.BoolVar(&colorblind, "c", false, "shorthand for --colorblind")
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [refresh_interval_seconds] [flags]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "refresh_interval_seconds defaults to 1 if omitted.\n\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+
+	if showVersion {
+		fmt.Println("boxtop", version)
+		return
 	}
 
-	if intervalArg != "" {
-		secs, err := strconv.ParseFloat(intervalArg, 64)
+	interval := time.Second
+	if args := flag.Args(); len(args) > 0 {
+		secs, err := strconv.ParseFloat(args[0], 64)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Usage: %s [refresh_interval_seconds] [--colorblind]\n", os.Args[0])
-			os.Exit(1)
+			flag.Usage()
+			os.Exit(2)
 		}
 		interval = time.Duration(secs * float64(time.Second))
 	}
