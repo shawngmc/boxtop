@@ -38,9 +38,6 @@ instructions.
 - **No help/keybinding screen.** All keys are packed into one footer line
   in `render.go`; a `h`/`?` overlay would scale better as more keys are
   added.
-- **No kill action.** Pressing a key (e.g. `k`) to send a signal to the
-  selected process, gated behind a confirm step, is standard for this
-  class of tool and not yet implemented.
 - **No trend/history view.** A small sparkline of RAM%/CPU% over the last
   N samples would show a slow climb toward the limit, not just the
   instantaneous value.
