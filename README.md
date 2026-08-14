@@ -27,10 +27,7 @@ go build -o boxtop .
   are hardcoded constants rather than read via `sysconf`. Noted inline
   in `util.go` — swap in `x/sys/unix` if exact parity matters for your
   containers.
-- **No tests.** `proc.go` and `cgroup.go`'s pure-parsing functions 
-  (`countCPUList`, `readProcessCPUSeconds`'s field-splitting, etc.)
-  are good candidates for table-driven unit tests before you trust 
-  this on real containers.
+- **Show CPU Make/Model and Clockspeed**
 
 ## AI Disclosure
 Claude Code was used to help write this, including the original python
