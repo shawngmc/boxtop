@@ -170,3 +170,40 @@ func TestDrawFrameFooterKillConfirmAndStatus(t *testing.T) {
 		t.Error("kill status message not found on screen")
 	}
 }
+
+func TestDrawFrameDetailPopup(t *testing.T) {
+	screen := newTestScreen(t, 100, 24)
+	state := newMonitorState()
+	data := testFrameData([]Process{
+		{PID: 1, Name: "init", NameLower: "init", Cmd: "/sbin/init"},
+	})
+
+	cpu := 3.5
+	state.detailMode = true
+	state.detailData = ProcessDetail{
+		PID: 4242, Name: "sleep", Cmd: "sleep 300", RSSKb: 2048, CPUPct: &cpu,
+		HaveExtra: true, State: "Sleeping", PPID: 1, Threads: 2, User: "root (uid 0)",
+	}
+	drawFrame(screen, state, data)
+
+	w, h := screen.Size()
+	for _, want := range []string{
+		"Process Detail: PID 4242",
+		"Name:    sleep",
+		"PPID:    1",
+		"State:   Sleeping",
+		"User:    root (uid 0)",
+		"CPU%:    3.5%",
+		"RSS:     2.0 MB",
+		"Cmd:     sleep 300",
+		"Enter/Esc/q: close",
+	} {
+		if _, ok := findRow(screen, w, h, want); !ok {
+			t.Errorf("detail popup text %q not found on screen", want)
+		}
+	}
+
+	if _, ok := findRow(screen, w, h, "Process detail — [Enter/Esc/q] close"); !ok {
+		t.Error("main footer did not show the detail-mode hint")
+	}
+}

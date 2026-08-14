@@ -149,6 +149,9 @@ func handleEvent(screen tcell.Screen, state *monitorState, ev tcell.Event) (redr
 		if state.killConfirmMode {
 			return handleKillConfirmKey(state, e)
 		}
+		if state.detailMode {
+			return handleDetailKey(state, e)
+		}
 		// killStatusMsg clears on the very next keypress, whatever it is —
 		// including a key that would otherwise be a no-op — so the OR-in of
 		// clearedStatus below still forces a redraw to drop the stale text.
@@ -215,6 +218,10 @@ func handleNormalKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool)
 		state.cursorHome()
 	case tcell.KeyEnd:
 		state.cursorEnd()
+	case tcell.KeyEnter:
+		if !state.startDetailView() {
+			return false, false
+		}
 	case tcell.KeyRune:
 		r := e.Rune()
 		if r == 'q' || r == 'Q' {
@@ -235,6 +242,28 @@ func handleNormalKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool)
 		return false, false
 	}
 	return true, false
+}
+
+// handleDetailKey applies a single keypress while the process-details popup
+// (opened via Enter) has focus. Enter/Esc/q/Q all close it — Enter doubles
+// as both "open" (in handleNormalKey) and "close" here, matching how a
+// header click both selects and re-flips a sort column. Ctrl+C still
+// force-quits, matching handleFilterKey/handleKillConfirmKey's escape hatch.
+func handleDetailKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool) {
+	switch e.Key() {
+	case tcell.KeyCtrlC:
+		return false, true
+	case tcell.KeyEscape, tcell.KeyEnter:
+		state.closeDetailView()
+		return true, false
+	case tcell.KeyRune:
+		switch e.Rune() {
+		case 'q', 'Q':
+			state.closeDetailView()
+			return true, false
+		}
+	}
+	return false, false
 }
 
 // mouseWheelStep is how many rows one wheel notch scrolls.

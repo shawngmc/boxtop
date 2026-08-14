@@ -76,6 +76,95 @@ func TestHandleEventClickSelectsRow(t *testing.T) {
 	}
 }
 
+func TestHandleNormalKeyEnterOpensDetailView(t *testing.T) {
+	s := newMonitorState()
+	s.currentProcs = []Process{
+		{PID: 1, Name: "init"},
+		{PID: 2, Name: "bash"},
+	}
+	s.cursor = 1
+
+	redraw, quit := handleNormalKey(s, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if !redraw || quit {
+		t.Fatalf("Enter: redraw=%v quit=%v, want redraw=true quit=false", redraw, quit)
+	}
+	if !s.detailMode {
+		t.Error("Enter did not open detailMode")
+	}
+	if s.detailData.PID != 2 || s.detailData.Name != "bash" {
+		t.Errorf("detailData = (%d, %q), want (2, \"bash\")", s.detailData.PID, s.detailData.Name)
+	}
+}
+
+func TestHandleNormalKeyEnterWithNothingSelectedIsNoop(t *testing.T) {
+	s := newMonitorState() // currentProcs is nil, cursor is 0
+
+	redraw, quit := handleNormalKey(s, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if redraw || quit {
+		t.Errorf("Enter with empty process list: redraw=%v quit=%v, want both false", redraw, quit)
+	}
+	if s.detailMode {
+		t.Error("Enter with empty process list opened detailMode")
+	}
+}
+
+// TestHandleEventDispatchesDetailModeBeforeNormalKeys confirms handleEvent
+// routes keys to handleDetailKey (not handleNormalKey) while detailMode is
+// set — otherwise e.g. cursor movement or re-opening the popup would leak
+// through, same concern TestHandleKillConfirmKeyBlocksStrayKeysAndCancels
+// covers for killConfirmMode.
+func TestHandleEventDispatchesDetailModeBeforeNormalKeys(t *testing.T) {
+	s := newMonitorState()
+	s.detailMode = true
+	s.detailData = ProcessDetail{PID: 42, Name: "sleep"}
+
+	redraw, quit := handleEvent(nil, s, tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if redraw || quit {
+		t.Errorf("KeyDown while detailMode: redraw=%v quit=%v, want both false", redraw, quit)
+	}
+	if s.cursor != 0 {
+		t.Errorf("cursor moved while detailMode was open: %d, want 0", s.cursor)
+	}
+
+	redraw, quit = handleEvent(nil, s, tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if !redraw || quit {
+		t.Errorf("Escape while detailMode: redraw=%v quit=%v, want redraw=true quit=false", redraw, quit)
+	}
+	if s.detailMode {
+		t.Error("Escape did not close detailMode")
+	}
+}
+
+func TestHandleDetailKeyBlocksStrayKeysAndCloses(t *testing.T) {
+	s := newMonitorState()
+	s.detailMode = true
+
+	redraw, quit := handleDetailKey(s, keyRune('a'))
+	if redraw || quit {
+		t.Errorf("stray key 'a': redraw=%v quit=%v, want both false", redraw, quit)
+	}
+	if !s.detailMode {
+		t.Error("a stray keypress closed the detail popup")
+	}
+
+	redraw, quit = handleDetailKey(s, keyRune('q'))
+	if !redraw || quit {
+		t.Errorf("'q': redraw=%v quit=%v, want redraw=true quit=false", redraw, quit)
+	}
+	if s.detailMode {
+		t.Error("'q' did not close detailMode")
+	}
+
+	s.detailMode = true
+	redraw, quit = handleDetailKey(s, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if !redraw || quit {
+		t.Errorf("Enter: redraw=%v quit=%v, want redraw=true quit=false", redraw, quit)
+	}
+	if s.detailMode {
+		t.Error("Enter did not close detailMode")
+	}
+}
+
 func TestHandleNormalKeyXWithNothingSelectedIsNoop(t *testing.T) {
 	s := newMonitorState() // currentProcs is nil, cursor is 0
 

@@ -88,6 +88,13 @@ type monitorState struct {
 	// in place of the footer help line until the next keypress clears it.
 	killStatusMsg string
 
+	// detailMode is true while the process-details popup (opened via
+	// Enter) has focus — mirrors filterMode/killConfirmMode. detailData is
+	// a snapshot captured once when the popup opened, not live-refreshed,
+	// same as killTargetPID/killTargetName.
+	detailMode bool
+	detailData ProcessDetail
+
 	cgroupCPUPrevUsageUsec int64
 	cgroupCPUPrevTime      time.Time
 	cgroupCPUHasBaseline   bool
@@ -414,6 +421,24 @@ func killResultMessage(pid int, name, sigName string, err error) string {
 	default:
 		return fmt.Sprintf("Failed to signal PID %d (%s): %v", pid, name, err)
 	}
+}
+
+// startDetailView opens the process-details popup for the process currently
+// under the cursor, snapshotting its data so a poll tick mid-popup can't
+// retarget it — same rationale as startKillConfirm. Returns false (no-op)
+// if the list is empty or the cursor is out of range.
+func (s *monitorState) startDetailView() bool {
+	if s.cursor < 0 || s.cursor >= len(s.currentProcs) {
+		return false
+	}
+	s.detailData = buildProcessDetail(s.currentProcs[s.cursor])
+	s.detailMode = true
+	return true
+}
+
+// closeDetailView closes the process-details popup (Enter/Esc/q).
+func (s *monitorState) closeDetailView() {
+	s.detailMode = false
 }
 
 // columnLabel ports col_header()'s arrow-appending: adds ▼ (descending)

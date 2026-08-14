@@ -354,6 +354,46 @@ func TestStartKillConfirm(t *testing.T) {
 	}
 }
 
+func TestStartDetailView(t *testing.T) {
+	s := newMonitorState()
+	s.currentProcs = []Process{
+		{PID: 1, Name: "init"},
+		{PID: 2, Name: "bash"},
+		{PID: 3, Name: "sleep"},
+	}
+	s.cursor = 2
+
+	if !s.startDetailView() {
+		t.Fatal("startDetailView() = false, want true")
+	}
+	if !s.detailMode {
+		t.Error("startDetailView did not set detailMode")
+	}
+	if s.detailData.PID != 3 || s.detailData.Name != "sleep" {
+		t.Errorf("detailData = (%d, %q), want (3, \"sleep\")", s.detailData.PID, s.detailData.Name)
+	}
+
+	s.closeDetailView()
+	if s.detailMode {
+		t.Error("closeDetailView did not clear detailMode")
+	}
+
+	s2 := newMonitorState()
+	if s2.startDetailView() {
+		t.Error("startDetailView() on empty currentProcs = true, want false")
+	}
+	if s2.detailMode {
+		t.Error("startDetailView set detailMode with an empty process list")
+	}
+
+	s3 := newMonitorState()
+	s3.currentProcs = []Process{{PID: 1, Name: "init"}}
+	s3.cursor = 5
+	if s3.startDetailView() {
+		t.Error("startDetailView() with out-of-range cursor = true, want false")
+	}
+}
+
 func TestRowAt(t *testing.T) {
 	s := newMonitorState()
 	s.scrollOffset = 5

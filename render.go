@@ -414,14 +414,114 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		helpLine = fmt.Sprintf(" Kill PID %d (%s)?  [y] SIGTERM   [Y] SIGKILL   [Esc/n] cancel",
 			state.killTargetPID, state.killTargetName)
 		helpStyle = gradientStyle(1, summaryStops).Bold(true)
+	case state.detailMode:
+		helpLine = " Process detail — [Enter/Esc/q] close"
 	case state.filterMode:
 		helpLine = " Filter: type to search, Enter to apply, Esc to clear | Ctrl+C exit"
 	case state.killStatusMsg != "":
 		helpLine = " " + state.killStatusMsg
 	default:
-		helpLine += " | Filter: [/] | Kill: [x]"
+		helpLine += " | Filter: [/] | Kill: [x] | Details: [Enter]"
 	}
 	drawText(screen, 0, y, helpLine, helpStyle)
+
+	if state.detailMode {
+		drawDetailPopup(screen, state.detailData, w, h)
+	}
+}
+
+// detailLines formats a ProcessDetail into the popup's content lines. Split
+// out from drawDetailPopup so the text content is testable without a
+// tcell.Screen.
+func detailLines(d ProcessDetail) []string {
+	lines := []string{
+		fmt.Sprintf("PID:     %d", d.PID),
+		fmt.Sprintf("Name:    %s", d.Name),
+	}
+	if d.HaveExtra {
+		lines = append(lines,
+			fmt.Sprintf("PPID:    %d", d.PPID),
+			fmt.Sprintf("State:   %s", d.State),
+			fmt.Sprintf("User:    %s", d.User),
+			fmt.Sprintf("Threads: %d      Nice: %d", d.Threads, d.Nice),
+		)
+	} else {
+		lines = append(lines, "(further details unavailable — process may have exited)")
+	}
+
+	cpuText := "--"
+	if d.CPUPct != nil {
+		cpuText = fmt.Sprintf("%.1f%%", *d.CPUPct)
+	}
+	lines = append(lines,
+		fmt.Sprintf("CPU%%:    %s", cpuText),
+		fmt.Sprintf("RSS:     %.1f MB", float64(d.RSSKb)/1024),
+	)
+	if d.HaveExtra {
+		lines = append(lines,
+			fmt.Sprintf("VmSize:  %.1f MB", float64(d.VmSizeKb)/1024),
+			fmt.Sprintf("VmSwap:  %.1f MB", float64(d.VmSwapKb)/1024),
+		)
+	}
+	if d.HaveExePath {
+		lines = append(lines, fmt.Sprintf("Exe:     %s", d.ExePath))
+	}
+	lines = append(lines, fmt.Sprintf("Cmd:     %s", d.Cmd))
+	return lines
+}
+
+// drawDetailPopup draws a bordered, centered box over the already-drawn
+// frame showing d's fields — called last in drawFrame so it overlays the
+// process table rather than being overwritten by it.
+func drawDetailPopup(screen tcell.Screen, d ProcessDetail, w, h int) {
+	lines := detailLines(d)
+
+	boxW := min(74, w-2)
+	if boxW < 24 {
+		boxW = min(24, w)
+	}
+	boxH := min(len(lines)+4, h-2)
+	if boxH < 6 {
+		boxH = min(6, h)
+	}
+	x0 := max(0, (w-boxW)/2)
+	y0 := max(0, (h-boxH)/2)
+
+	style := tcell.StyleDefault
+	for y := y0; y < y0+boxH && y < h; y++ {
+		for x := x0; x < x0+boxW && x < w; x++ {
+			ch := ' '
+			switch {
+			case y == y0 && x == x0:
+				ch = '┌'
+			case y == y0 && x == x0+boxW-1:
+				ch = '┐'
+			case y == y0+boxH-1 && x == x0:
+				ch = '└'
+			case y == y0+boxH-1 && x == x0+boxW-1:
+				ch = '┘'
+			case y == y0 || y == y0+boxH-1:
+				ch = '─'
+			case x == x0 || x == x0+boxW-1:
+				ch = '│'
+			}
+			screen.SetContent(x, y, ch, nil, style)
+		}
+	}
+
+	innerWidth := boxW - 4
+	title := fmt.Sprintf(" Process Detail: PID %d ", d.PID)
+	drawText(screen, x0+2, y0, truncateVisible(title, innerWidth), style.Bold(true))
+
+	maxContentLines := boxH - 3 // top border, bottom border, footer line
+	for i, l := range lines {
+		if i >= maxContentLines {
+			break
+		}
+		drawText(screen, x0+2, y0+1+i, truncateVisible(l, innerWidth), style)
+	}
+
+	drawText(screen, x0+2, y0+boxH-2, truncateVisible("Enter/Esc/q: close", innerWidth), style.Italic(true))
 }
 
 func repeatRune(r rune, n int) string {

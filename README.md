@@ -10,6 +10,9 @@ Features:
   process shows up even after the RAM bar drops back under 100%
 - Incremental name/command filter: press `/` to type, `Enter` to apply,
   `Esc` to clear — or start pre-filtered with `--filter`/`-f`
+- Process details popup: press `Enter` on a selected row for PPID, state,
+  owning user, thread count, nice value, VmSize/VmSwap, and the resolved
+  exe path; `Enter`/`Esc`/`q` closes it
 
 
 
@@ -64,7 +67,6 @@ instructions.
   skip straight to the bracketed name, saving a syscall per newly-seen
   kthread. RSS needs no such fix — it's already 0 for kernel threads and
   parsed from that same single `/stat` read at no extra cost.
-- **Row app details**
 - **Static one-tick non-interactive print**
 
 ## AI Disclosure
