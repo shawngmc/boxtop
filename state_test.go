@@ -6,7 +6,8 @@ func TestSortDirtyFlag(t *testing.T) {
 	s := newMonitorState()
 	s.sortDirty = false
 
-	// Selecting a new column marks the order stale.
+	// Selecting a new column marks the order stale and resets scroll to top.
+	s.scrollOffset = 25
 	s.setSortColumn(sortCPU)
 	if !s.sortDirty {
 		t.Error("setSortColumn(new column) did not set sortDirty")
@@ -14,9 +15,14 @@ func TestSortDirtyFlag(t *testing.T) {
 	if s.sortCol != sortCPU {
 		t.Errorf("sortCol = %v, want sortCPU", s.sortCol)
 	}
+	if s.scrollOffset != 0 {
+		t.Errorf("setSortColumn(new column) left scrollOffset = %d, want 0", s.scrollOffset)
+	}
 
-	// Re-selecting the active column flips direction and stays dirty.
+	// Re-selecting the active column flips direction, stays dirty, and keeps
+	// the current scroll offset (only a column change resets it).
 	s.sortDirty = false
+	s.scrollOffset = 25
 	prevReverse := s.sortReverse
 	s.setSortColumn(sortCPU)
 	if !s.sortDirty {
@@ -24,6 +30,9 @@ func TestSortDirtyFlag(t *testing.T) {
 	}
 	if s.sortReverse == prevReverse {
 		t.Error("setSortColumn(active column) did not flip sortReverse")
+	}
+	if s.scrollOffset != 25 {
+		t.Errorf("setSortColumn(active column) changed scrollOffset to %d, want 25 preserved", s.scrollOffset)
 	}
 
 	// 'r' toggles direction and marks stale.

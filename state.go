@@ -127,6 +127,11 @@ func (s *monitorState) setSortColumn(col sortColumn) {
 	} else {
 		s.sortCol = col
 		s.sortReverse = sortDefaultReverse[col]
+		// Switching the sort key reorders the whole list, so the scroll
+		// offset (a row index into the old order) no longer means anything —
+		// jump back to the top. A direction flip on the same column keeps the
+		// offset, matching the "flip an already-sorted header" behavior.
+		s.scrollOffset = 0
 	}
 	s.sortDirty = true
 }
