@@ -47,6 +47,16 @@ func drawBar(screen tcell.Screen, x, y, length int, frac float64, stops []colorS
 	return x + length
 }
 
+// cursorRowStyle applies reverse video when this is the cursor row,
+// preserving each column's existing gradient danger-coloring (e.g. a red
+// RSS value becomes a red background) instead of replacing it outright.
+func cursorRowStyle(base tcell.Style, isCursorRow bool) tcell.Style {
+	if isCursorRow {
+		return base.Reverse(true)
+	}
+	return base
+}
+
 // frameData is an immutable snapshot of everything a frame needs to draw,
 // captured once per poll by collectFrame. Splitting collection from drawing
 // is what lets keypresses (scroll/sort) trigger a cheap redraw from the last
@@ -309,17 +319,22 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		totalRSSKb = filteredRSSKb
 	}
 
+	state.currentProcs = procs
+
 	total := len(procs)
+	state.clampCursor(total)
 	truncated := total > maxProcRows
 	shownRows := maxProcRows
 	if truncated {
 		shownRows = max(1, maxProcRows-1) // reserve a row for the scroll-position status line
 	}
+	state.syncScrollToCursor(shownRows)
 	visible := state.visibleProcesses(procs, shownRows)
 
 	maxKb := float64(maxBytes) / 1024
 
-	for _, p := range visible {
+	for i, p := range visible {
+		isCursorRow := state.scrollOffset+i == state.cursor
 		name := p.Name
 		if len([]rune(name)) > nameWidth {
 			name = string([]rune(name)[:nameWidth-1]) + "…"
@@ -333,7 +348,7 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		if maxKb > 0 {
 			rssFrac = float64(p.RSSKb) / maxKb
 		}
-		rssStyle := gradientStyle(rssFrac, processStops)
+		rssStyle := cursorRowStyle(gradientStyle(rssFrac, processStops), isCursorRow)
 
 		var cpuText string
 		var cpuStyle tcell.Style
@@ -348,13 +363,15 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 			cpuText = fmt.Sprintf("%*.1f%%", cpuWidth-1, *p.CPUPct)
 			cpuStyle = gradientStyle(cpuFrac, processCPUStops)
 		}
+		cpuStyle = cursorRowStyle(cpuStyle, isCursorRow)
 
-		x := drawText(screen, 0, y, fmt.Sprintf(" %*d  %-*s  ", pidWidth, p.PID, nameWidth, name), tcell.StyleDefault)
+		rowStyle := cursorRowStyle(tcell.StyleDefault, isCursorRow)
+		x := drawText(screen, 0, y, fmt.Sprintf(" %*d  %-*s  ", pidWidth, p.PID, nameWidth, name), rowStyle)
 		x = drawText(screen, x, y, cpuText, cpuStyle)
-		x = drawText(screen, x, y, "  ", tcell.StyleDefault)
+		x = drawText(screen, x, y, "  ", rowStyle)
 		x = drawText(screen, x, y, fmt.Sprintf("%*.1f", rssWidth, float64(p.RSSKb)/1024), rssStyle)
-		x = drawText(screen, x, y, "  ", tcell.StyleDefault)
-		drawText(screen, x, y, fmt.Sprintf("%-*s", cmdWidth, cmd), tcell.StyleDefault)
+		x = drawText(screen, x, y, "  ", rowStyle)
+		drawText(screen, x, y, fmt.Sprintf("%-*s", cmdWidth, cmd), rowStyle)
 		y++
 	}
 
@@ -389,12 +406,20 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 	}
 	y++
 	helpLine := " Ctrl+C/q exit | Sort: [m]em [c]pu [p]id [n]ame  [r]everse | Scroll: ↑↓/j/k PgUp/PgDn Home/End | Mouse: wheel scroll, click header to sort"
-	if state.filterMode {
+	helpStyle := tcell.StyleDefault
+	switch {
+	case state.killConfirmMode:
+		helpLine = fmt.Sprintf(" Kill PID %d (%s)?  [y] SIGTERM   [Y] SIGKILL   [Esc/n] cancel",
+			state.killTargetPID, state.killTargetName)
+		helpStyle = gradientStyle(1, summaryStops).Bold(true)
+	case state.filterMode:
 		helpLine = " Filter: type to search, Enter to apply, Esc to clear | Ctrl+C exit"
-	} else {
-		helpLine += " | Filter: [/]"
+	case state.killStatusMsg != "":
+		helpLine = " " + state.killStatusMsg
+	default:
+		helpLine += " | Filter: [/] | Kill: [x]"
 	}
-	drawText(screen, 0, y, helpLine, tcell.StyleDefault)
+	drawText(screen, 0, y, helpLine, helpStyle)
 }
 
 func repeatRune(r rune, n int) string {

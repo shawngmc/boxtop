@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -145,38 +146,23 @@ func run(interval time.Duration, initialFilter string) error {
 func handleEvent(screen tcell.Screen, state *monitorState, ev tcell.Event) (redraw, quit bool) {
 	switch e := ev.(type) {
 	case *tcell.EventKey:
+		if state.killConfirmMode {
+			return handleKillConfirmKey(state, e)
+		}
+		// killStatusMsg clears on the very next keypress, whatever it is —
+		// including a key that would otherwise be a no-op — so the OR-in of
+		// clearedStatus below still forces a redraw to drop the stale text.
+		clearedStatus := state.killStatusMsg != ""
+		if clearedStatus {
+			state.killStatusMsg = ""
+		}
+		var redraw, quit bool
 		if state.filterMode {
-			return handleFilterKey(state, e)
+			redraw, quit = handleFilterKey(state, e)
+		} else {
+			redraw, quit = handleNormalKey(state, e)
 		}
-		switch e.Key() {
-		case tcell.KeyCtrlC, tcell.KeyEscape:
-			return false, true
-		case tcell.KeyUp:
-			state.scrollUp()
-		case tcell.KeyDown:
-			state.scrollDown()
-		case tcell.KeyPgUp:
-			state.pageUp()
-		case tcell.KeyPgDn:
-			state.pageDown()
-		case tcell.KeyHome:
-			state.scrollHome()
-		case tcell.KeyEnd:
-			state.scrollEnd()
-		case tcell.KeyRune:
-			r := e.Rune()
-			if r == 'q' || r == 'Q' {
-				return false, true
-			}
-			if r == '/' {
-				state.filterMode = true
-				return true, false
-			}
-			state.handleRuneKey(r)
-		default:
-			return false, false
-		}
-		return true, false
+		return redraw || clearedStatus, quit
 	case *tcell.EventMouse:
 		btns := e.Buttons()
 		switch {
@@ -206,6 +192,47 @@ func handleEvent(screen tcell.Screen, state *monitorState, ev tcell.Event) (redr
 	return false, false
 }
 
+// handleNormalKey applies a single keypress when neither the filter input
+// nor the kill-confirmation prompt has focus: cursor movement, quit, and
+// the mode-opening keys ('/' for filter, 'x' for kill).
+func handleNormalKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool) {
+	switch e.Key() {
+	case tcell.KeyCtrlC, tcell.KeyEscape:
+		return false, true
+	case tcell.KeyUp:
+		state.cursorUp()
+	case tcell.KeyDown:
+		state.cursorDown()
+	case tcell.KeyPgUp:
+		state.cursorPageUp()
+	case tcell.KeyPgDn:
+		state.cursorPageDown()
+	case tcell.KeyHome:
+		state.cursorHome()
+	case tcell.KeyEnd:
+		state.cursorEnd()
+	case tcell.KeyRune:
+		r := e.Rune()
+		if r == 'q' || r == 'Q' {
+			return false, true
+		}
+		if r == '/' {
+			state.filterMode = true
+			return true, false
+		}
+		if r == 'x' {
+			if state.startKillConfirm() {
+				return true, false
+			}
+			return false, false
+		}
+		state.handleRuneKey(r)
+	default:
+		return false, false
+	}
+	return true, false
+}
+
 // mouseWheelStep is how many rows one wheel notch scrolls.
 const mouseWheelStep = 3
 
@@ -232,6 +259,36 @@ func handleFilterKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool)
 	case tcell.KeyRune:
 		state.appendFilterRune(e.Rune())
 		return true, false
+	}
+	return false, false
+}
+
+// handleKillConfirmKey applies a single keypress while the kill-
+// confirmation prompt (opened via 'x') has focus. y/Y are checked on the
+// raw rune, like q/Q in handleNormalKey, to distinguish SIGTERM from
+// SIGKILL — handleRuneKey's lowercasing dispatch is not used here. Any
+// other rune is ignored rather than treated as quit or cancel, so a stray
+// keypress can't slip past the confirm step. Ctrl+C still force-quits,
+// matching handleFilterKey's escape hatch.
+func handleKillConfirmKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool) {
+	switch e.Key() {
+	case tcell.KeyCtrlC:
+		return false, true
+	case tcell.KeyEscape:
+		state.cancelKillConfirm()
+		return true, false
+	case tcell.KeyRune:
+		switch e.Rune() {
+		case 'y':
+			state.sendKillSignal(syscall.SIGTERM)
+			return true, false
+		case 'Y':
+			state.sendKillSignal(syscall.SIGKILL)
+			return true, false
+		case 'n', 'N':
+			state.cancelKillConfirm()
+			return true, false
+		}
 	}
 	return false, false
 }
