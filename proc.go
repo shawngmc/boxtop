@@ -11,11 +11,15 @@ import (
 // CPUPct is a pointer so nil can represent Python's None (no baseline
 // sample yet), rather than overloading a sentinel float value.
 type Process struct {
-	PID    int
-	RSSKb  int64
-	Name   string
-	Cmd    string
-	CPUPct *float64
+	PID   int
+	RSSKb int64
+	Name  string
+	// NameLower is Name pre-lowercased once at build time so the name-sort
+	// comparator doesn't call strings.ToLower (an allocation) O(n log n)
+	// times per sort — and per redraw, since sorting runs every frame.
+	NameLower string
+	Cmd       string
+	CPUPct    *float64
 }
 
 // sanitize ports sanitize(): replaces control characters (newlines, tabs)
@@ -187,14 +191,20 @@ type cpuSample struct {
 // /statm (RSS) per tick, plus /cmdline only for pids not already cached —
 // roughly a 4x reduction in per-process I/O for a steady process set.
 //
-// prev carries the per-pid CPU baseline across frames (mutated in place) and
-// cmdCache carries the per-pid COMMAND strings; both are pruned of pids that
-// no longer exist so long sessions don't leak.
-func buildProcesses(coresLimit float64, prev map[int]cpuSample, cmdCache map[int]string) []Process {
+// The per-pid CPU baseline (procCPUPrev), COMMAND cache (cmdCache), and the
+// scratch "seen this tick" set (procSeen) all live on state and are reused
+// across frames: procCPUPrev and cmdCache carry data forward (pruned of pids
+// that no longer exist so long sessions don't leak), while procSeen is just
+// cleared and refilled each tick instead of allocating a fresh map.
+func buildProcesses(state *monitorState, coresLimit float64) []Process {
 	now := time.Now()
+	prev := state.procCPUPrev
+	cmdCache := state.cmdCache
+	seen := state.procSeen
+	clear(seen)
+
 	pids := listPIDs()
 	procs := make([]Process, 0, len(pids))
-	seen := make(map[int]bool, len(pids))
 
 	for _, pid := range pids {
 		name, cpuSecs, statOK := readStatNameCPU(pid)
@@ -211,10 +221,11 @@ func buildProcesses(coresLimit float64, prev map[int]cpuSample, cmdCache map[int
 		seen[pid] = true
 
 		p := Process{
-			PID:   pid,
-			RSSKb: rssKb,
-			Name:  name,
-			Cmd:   cmdFor(pid, name, cmdCache),
+			PID:       pid,
+			RSSKb:     rssKb,
+			Name:      name,
+			NameLower: strings.ToLower(name),
+			Cmd:       cmdFor(pid, name, cmdCache),
 		}
 
 		// CPU% from the delta against the previous sample for this pid.

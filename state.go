@@ -45,6 +45,7 @@ type monitorState struct {
 
 	procCPUPrev map[int]cpuSample // per-pid CPU sampling baseline
 	cmdCache    map[int]string    // per-pid COMMAND string, read once per process lifetime
+	procSeen    map[int]bool      // scratch set of pids seen this tick, cleared+reused each frame
 
 	cgroupCPUPrevUsageUsec int64
 	cgroupCPUPrevTime      time.Time
@@ -71,6 +72,7 @@ func newMonitorState() *monitorState {
 		lastPageSize: 10,
 		procCPUPrev:  make(map[int]cpuSample),
 		cmdCache:     make(map[int]string),
+		procSeen:     make(map[int]bool),
 	}
 }
 
@@ -158,7 +160,7 @@ func (s *monitorState) sortProcesses(procs []Process) {
 		case sortPID:
 			a, b = float64(procs[i].PID), float64(procs[j].PID)
 		case sortName:
-			ni, nj := strings.ToLower(procs[i].Name), strings.ToLower(procs[j].Name)
+			ni, nj := procs[i].NameLower, procs[j].NameLower
 			if s.sortReverse {
 				return ni > nj
 			}

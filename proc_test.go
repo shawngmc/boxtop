@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -128,10 +129,9 @@ func TestBuildProcessesLive(t *testing.T) {
 		t.Fatalf("readStatmRSS(self) = (%d, %v), want positive rss and ok", rss, ok)
 	}
 
-	prev := make(map[int]cpuSample)
-	cmdCache := make(map[int]string)
+	state := newMonitorState()
 
-	procs := buildProcesses(1.0, prev, cmdCache)
+	procs := buildProcesses(state, 1.0)
 	if len(procs) == 0 {
 		t.Fatal("buildProcesses returned no processes")
 	}
@@ -143,18 +143,24 @@ func TestBuildProcessesLive(t *testing.T) {
 			if p.Name == "" || p.Cmd == "" {
 				t.Errorf("self process has empty Name/Cmd: %+v", p)
 			}
+			if p.NameLower != strings.ToLower(p.Name) {
+				t.Errorf("NameLower = %q, want lowercased %q", p.NameLower, p.Name)
+			}
 		}
 	}
 	if !found {
 		t.Errorf("buildProcesses did not include self pid %d", self)
 	}
-	if _, ok := cmdCache[self]; !ok {
+	if _, ok := state.cmdCache[self]; !ok {
 		t.Errorf("cmdCache not populated for self pid %d", self)
 	}
+	if !state.procSeen[self] {
+		t.Errorf("procSeen not populated for self pid %d", self)
+	}
 
-	// A second pass with the same baseline maps should now yield a non-nil
-	// CPU% for the self pid (it has a prior sample) and reuse the cmd cache.
-	procs2 := buildProcesses(1.0, prev, cmdCache)
+	// A second pass with the same state should reuse the baseline/cmd caches
+	// and the cleared procSeen scratch set.
+	procs2 := buildProcesses(state, 1.0)
 	if len(procs2) == 0 {
 		t.Fatal("second buildProcesses returned no processes")
 	}

@@ -6,6 +6,25 @@ import (
 	"strings"
 )
 
+// firstLineWithPrefix returns the first line of s beginning with prefix,
+// scanning in place via IndexByte rather than materializing the whole
+// []string that strings.Split allocates just to read a single line out of a
+// multi-line /proc or /sys file.
+func firstLineWithPrefix(s, prefix string) (string, bool) {
+	for len(s) > 0 {
+		line := s
+		if i := strings.IndexByte(s, '\n'); i >= 0 {
+			line, s = s[:i], s[i+1:]
+		} else {
+			s = ""
+		}
+		if strings.HasPrefix(line, prefix) {
+			return line, true
+		}
+	}
+	return "", false
+}
+
 // readCgroupVal ports read_cgroup_val(): tries the v2 path first, then
 // falls back to the v1 memory-controller path. Returns (value, true) on
 // success, (0, false) if the file doesn't exist or isn't a plain integer.
@@ -37,15 +56,14 @@ func readHostMemTotal() (int64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "MemTotal:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-					return kb * 1024, true
-				}
-			}
-			break
+	line, ok := firstLineWithPrefix(string(data), "MemTotal:")
+	if !ok {
+		return 0, false
+	}
+	fields := strings.Fields(line)
+	if len(fields) >= 2 {
+		if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+			return kb * 1024, true
 		}
 	}
 	return 0, false
@@ -146,13 +164,11 @@ func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 // CPU time consumed by the whole cgroup, in microseconds, since creation.
 func readCgroupCPUUsageUsec() (int64, bool) {
 	if data, err := os.ReadFile("/sys/fs/cgroup/cpu.stat"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "usage_usec") {
-				fields := strings.Fields(line)
-				if len(fields) == 2 {
-					if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-						return v, true
-					}
+		if line, ok := firstLineWithPrefix(string(data), "usage_usec"); ok {
+			fields := strings.Fields(line)
+			if len(fields) == 2 {
+				if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+					return v, true
 				}
 			}
 		}

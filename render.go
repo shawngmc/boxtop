@@ -97,7 +97,7 @@ func collectFrame(state *monitorState) (frameData, error) {
 		cpuPct = state.sampleCgroupCPUPct(coresLimit)
 	}
 
-	procs := buildProcesses(coresLimit, state.procCPUPrev, state.cmdCache)
+	procs := buildProcesses(state, coresLimit)
 	var totalRSSKb int64
 	for _, p := range procs {
 		totalRSSKb += p.RSSKb
