@@ -6,6 +6,8 @@ Features:
 - Mouse support for column sorting and scrolling via wheel
 - Falls back to host constraints if not constrained/in cgroup
 - Colorblind mode via `--colorblind`
+- Surfaces the cgroup's OOM-kill count, when available, so a kernel-reaped
+  process shows up even after the RAM bar drops back under 100%
 
 
 
@@ -26,10 +28,6 @@ instructions.
   in `util.go` — swap in `x/sys/unix` if exact parity matters for your
   containers.
 - **Show CPU Make/Model and Clockspeed**
-- **No OOM-kill visibility.** `memory.events` (cgroup v2) exposes
-  `oom_kill`/`oom` counters. Surfacing a rising count would tell a user the
-  kernel has already started reaping processes, instead of just showing a
-  RAM bar pinned at 100%.
 - **No swap accounting.** `memory.swap.current`/`memory.swap.max` are
   tracked separately from `memory.max` in cgroup v2. The RAM bar can look
   fine while swap is thrashing.
@@ -70,6 +68,14 @@ instructions.
   `ci.yml` on `push`/`pull_request` (plus maybe `golangci-lint`) would
   close that gap.
 - **No Dependabot config** for the tcell/x-sys dependency tree.
+- **Kernel thread cmdline reads are wasted.** `cmdFor` in `proc.go` does a
+  full `open`/`read`/`close` of `/proc/<pid>/cmdline` on every cache miss,
+  which always comes back empty for kernel threads. The `flags` field
+  already present in the `/proc/<pid>/stat` line `parseStatNameCPU` reads
+  (`PF_KTHREAD`, `0x00200000`) could detect kernel threads for free and
+  skip straight to the bracketed name, saving a syscall per newly-seen
+  kthread. RSS needs no such fix — it's already 0 for kernel threads and
+  parsed from that same single `/stat` read at no extra cost.
 
 ## AI Disclosure
 Claude Code was used to help write this, including the original python

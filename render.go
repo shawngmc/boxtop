@@ -61,6 +61,8 @@ type frameData struct {
 	cpuPct              *float64 // summary cgroup CPU %, nil while measuring
 	procs               []Process
 	totalRSSKb          int64
+	oomKills            int64
+	haveOOMData         bool
 }
 
 // collectFrame ports the per-tick data gathering: cgroup memory/CPU limits,
@@ -97,6 +99,8 @@ func collectFrame(state *monitorState) (frameData, error) {
 		cpuPct = state.sampleCgroupCPUPct(coresLimit)
 	}
 
+	oomKills, haveOOMData := readCgroupOOMKills()
+
 	procs := buildProcesses(state, coresLimit)
 	// A fresh poll yields a brand-new unsorted slice, so the next drawFrame
 	// must sort it regardless of whether the sort column changed.
@@ -116,6 +120,8 @@ func collectFrame(state *monitorState) (frameData, error) {
 		cpuPct:       cpuPct,
 		procs:        procs,
 		totalRSSKb:   totalRSSKb,
+		oomKills:     oomKills,
+		haveOOMData:  haveOOMData,
 	}, nil
 }
 
@@ -291,17 +297,24 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 
 	drawText(screen, 0, y, rule, tcell.StyleDefault)
 	y++
-	drawText(screen, 0, y, fmt.Sprintf(" Processes: %-5d  Sum of RSS: %.1f MB  (cgroup usage may include cache/shared mem not in RSS)",
+	procX := drawText(screen, 0, y, fmt.Sprintf(" Processes: %-5d  Sum of RSS: %.1f MB  (cgroup usage may include cache/shared mem not in RSS)",
 		total, float64(totalRSSKb)/1024), tcell.StyleDefault)
+	// OOM-kill counter: only shown when memory.events (or its v1
+	// memory.oom_control fallback) is actually readable — e.g. omitted
+	// outside a real memory-limited cgroup — since a bare "0" there would
+	// read as "no kills happened" rather than the true "not measured." The
+	// count only ever climbs, so any value above zero means the kernel has
+	// already reaped a process in this cgroup, which the RAM bar alone
+	// won't show once the freed memory drops it back under 100%.
+	if data.haveOOMData {
+		oomStyle := gradientStyle(0, summaryStops)
+		if data.oomKills > 0 {
+			oomStyle = gradientStyle(1, summaryStops).Bold(true)
+		}
+		drawText(screen, procX, y, fmt.Sprintf("  OOM Kills: %d", data.oomKills), oomStyle)
+	}
 	y++
 	drawText(screen, 0, y, " Ctrl+C/q exit | Sort: [m]em [c]pu [p]id [n]ame  [r]everse | Scroll: ↑↓/j/k PgUp/PgDn Home/End | Mouse: wheel scroll, click header to sort", tcell.StyleDefault)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func repeatRune(r rune, n int) string {

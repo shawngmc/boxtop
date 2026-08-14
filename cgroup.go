@@ -160,6 +160,44 @@ func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 	return 0, "", false
 }
 
+// readCgroupOOMKills returns the cumulative number of times the kernel has
+// OOM-killed a process in this cgroup: the oom_kill counter in
+// memory.events (cgroup v2), or the oom_kill field of memory.oom_control
+// (cgroup v1, on kernels new enough to report it there). This only ever
+// climbs, so a nonzero value means the kernel has already started reaping
+// processes — worth surfacing even while the RAM bar still reads under
+// 100%, since a burst of allocation can trigger a kill and free the memory
+// before the next poll samples memory.current.
+//
+// Returns (0, false) if neither file exposes the counter, which is the
+// expected case when boxtop isn't confined by a real memory-limited
+// cgroup (bare host, most WSL setups) — the same condition collectFrame
+// already detects via readHostMemTotal's noLimit fallback. Callers should
+// omit the OOM display entirely in that case rather than showing a
+// misleading "0", since 0 there doesn't mean "safe", it means "not
+// measured."
+func readCgroupOOMKills() (int64, bool) {
+	paths := []string{
+		"/sys/fs/cgroup/memory.events",
+		"/sys/fs/cgroup/memory/memory.oom_control",
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if line, ok := firstLineWithPrefix(string(data), "oom_kill "); ok {
+			fields := strings.Fields(line)
+			if len(fields) == 2 {
+				if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+					return v, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
 // readCgroupCPUUsageUsec ports read_cgroup_cpu_usage_usec(): cumulative
 // CPU time consumed by the whole cgroup, in microseconds, since creation.
 func readCgroupCPUUsageUsec() (int64, bool) {
