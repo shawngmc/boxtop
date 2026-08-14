@@ -13,6 +13,8 @@ Features:
 - Process details popup: press `Enter` on a selected row for PPID, state,
   owning user, thread count, nice value, VmSize/VmSwap, and the resolved
   exe path; `Enter`/`Esc`/`q` closes it
+- Keybinding help screen: press `h` or `?` for an overlay listing every key
+  and mouse action; `Enter`/`Esc`/`q` closes it
 - Non-interactive mode: prints one snapshot (header, full process list,
   simplified footer) and exits instead of running the TUI — auto-enabled
   when stdin or stdout isn't a terminal (piped/redirected), or forced with
@@ -38,9 +40,6 @@ instructions.
 - **No cache-vs-anon breakdown.** `memory.stat`'s `anon`/`file` split would
   let users tell reclaimable page cache apart from a real leak, instead of
   just disclaiming the ambiguity in the footer line.
-- **No help/keybinding screen.** All keys are packed into one footer line
-  in `render.go`; a `h`/`?` overlay would scale better as more keys are
-  added.
 - **No trend/history view.** A small sparkline of RAM%/CPU% over the last
   N samples would show a slow climb toward the limit, not just the
   instantaneous value.

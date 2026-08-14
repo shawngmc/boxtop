@@ -165,6 +165,9 @@ func handleEvent(screen tcell.Screen, state *monitorState, ev tcell.Event) (redr
 		if state.detailMode {
 			return handleDetailKey(state, e)
 		}
+		if state.helpMode {
+			return handleHelpKey(state, e)
+		}
 		// killStatusMsg clears on the very next keypress, whatever it is —
 		// including a key that would otherwise be a no-op — so the OR-in of
 		// clearedStatus below still forces a redraw to drop the stale text.
@@ -250,6 +253,10 @@ func handleNormalKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool)
 			}
 			return false, false
 		}
+		if r == 'h' || r == 'H' || r == '?' {
+			state.openHelpView()
+			return true, false
+		}
 		state.handleRuneKey(r)
 	default:
 		return false, false
@@ -273,6 +280,26 @@ func handleDetailKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool)
 		switch e.Rune() {
 		case 'q', 'Q':
 			state.closeDetailView()
+			return true, false
+		}
+	}
+	return false, false
+}
+
+// handleHelpKey applies a single keypress while the keybinding help popup
+// (opened via 'h'/'?') has focus. Enter/Esc/q/Q all close it, same as
+// handleDetailKey. Ctrl+C still force-quits.
+func handleHelpKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool) {
+	switch e.Key() {
+	case tcell.KeyCtrlC:
+		return false, true
+	case tcell.KeyEscape, tcell.KeyEnter:
+		state.closeHelpView()
+		return true, false
+	case tcell.KeyRune:
+		switch e.Rune() {
+		case 'q', 'Q':
+			state.closeHelpView()
 			return true, false
 		}
 	}

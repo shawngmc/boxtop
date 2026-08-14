@@ -407,7 +407,7 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		drawText(screen, procX, y, fmt.Sprintf("  OOM Kills: %d", data.oomKills), oomStyle)
 	}
 	y++
-	helpLine := " Ctrl+C/q exit | Sort: [m]em [c]pu [p]id [n]ame  [r]everse | Scroll: ↑↓/j/k PgUp/PgDn Home/End | Mouse: wheel scroll, click header to sort, click row to select"
+	helpLine := " Help: [h] | Quit: [q] | Sort: [m]em [c]pu [p]id [n]ame [r]everse | Scroll: [↑↓] [PgUp/PgDn] [Home/End]"
 	helpStyle := tcell.StyleDefault
 	switch {
 	case state.killConfirmMode:
@@ -416,6 +416,8 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		helpStyle = gradientStyle(1, summaryStops).Bold(true)
 	case state.detailMode:
 		helpLine = " Process detail — [Enter/Esc/q] close"
+	case state.helpMode:
+		helpLine = " Keybinding help — [Enter/Esc/q] close"
 	case state.filterMode:
 		helpLine = " Filter: type to search, Enter to apply, Esc to clear | Ctrl+C exit"
 	case state.killStatusMsg != "":
@@ -427,6 +429,9 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 
 	if state.detailMode {
 		drawDetailPopup(screen, state.detailData, w, h)
+	}
+	if state.helpMode {
+		drawHelpPopup(screen, w, h)
 	}
 }
 
@@ -522,6 +527,93 @@ func drawDetailPopup(screen tcell.Screen, d ProcessDetail, w, h int) {
 	}
 
 	drawText(screen, x0+2, y0+boxH-2, truncateVisible("Enter/Esc/q: close", innerWidth), style.Italic(true))
+}
+
+// helpLines is the static content of the keybinding help popup, grouped by
+// topic. Split out from drawHelpPopup so the text is testable without a
+// tcell.Screen, matching detailLines/drawDetailPopup.
+func helpLines() []string {
+	return []string{
+		"Navigation",
+		"  ↑/↓, j/k, PgUp/PgDn, Home/End move the cursor",
+		"  mouse wheel scrolls; click a header to sort, a row to select",
+		"",
+		"Sorting",
+		"  m/c/p/n  sort by mem/cpu/pid/name (again = reverse)",
+		"  r        reverse the current sort direction",
+		"",
+		"Filter",
+		"  /        start filtering by name/command",
+		"  Enter    apply filter        Esc  clear filter",
+		"",
+		"Process actions",
+		"  Enter    show process details",
+		"  x        kill selected process (y: SIGTERM, Y: SIGKILL)",
+		"",
+		"Other",
+		"  h, ?       this help screen",
+		"  q, Ctrl+C  quit (or close a popup)",
+	}
+}
+
+// drawHelpPopup draws a bordered, centered box listing all keybindings,
+// mirroring drawDetailPopup's layout — called last in drawFrame so it
+// overlays the process table.
+func drawHelpPopup(screen tcell.Screen, w, h int) {
+	lines := helpLines()
+
+	// Size the box to the longest line rather than a fixed width, so a
+	// terminal wide enough never clips content — only a narrow terminal
+	// forces wrapping-free truncation via the w-2 cap.
+	longest := 0
+	for _, l := range lines {
+		if rl := len([]rune(l)); rl > longest {
+			longest = rl
+		}
+	}
+	boxW := min(longest+4, w-2)
+	if boxW < 24 {
+		boxW = min(24, w)
+	}
+	boxH := min(len(lines)+3, h-2)
+	if boxH < 6 {
+		boxH = min(6, h)
+	}
+	x0 := max(0, (w-boxW)/2)
+	y0 := max(0, (h-boxH)/2)
+
+	style := tcell.StyleDefault
+	for y := y0; y < y0+boxH && y < h; y++ {
+		for x := x0; x < x0+boxW && x < w; x++ {
+			ch := ' '
+			switch {
+			case y == y0 && x == x0:
+				ch = '┌'
+			case y == y0 && x == x0+boxW-1:
+				ch = '┐'
+			case y == y0+boxH-1 && x == x0:
+				ch = '└'
+			case y == y0+boxH-1 && x == x0+boxW-1:
+				ch = '┘'
+			case y == y0 || y == y0+boxH-1:
+				ch = '─'
+			case x == x0 || x == x0+boxW-1:
+				ch = '│'
+			}
+			screen.SetContent(x, y, ch, nil, style)
+		}
+	}
+
+	innerWidth := boxW - 4
+	drawText(screen, x0+2, y0, truncateVisible(" Keybindings ", innerWidth), style.Bold(true))
+
+	maxContentLines := boxH - 2 // top border, bottom border
+	for i, l := range lines {
+		if i >= maxContentLines {
+			break
+		}
+		drawText(screen, x0+2, y0+1+i, truncateVisible(l, innerWidth), style)
+	}
 }
 
 func repeatRune(r rune, n int) string {

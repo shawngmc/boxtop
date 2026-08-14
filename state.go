@@ -95,6 +95,11 @@ type monitorState struct {
 	detailMode bool
 	detailData ProcessDetail
 
+	// helpMode is true while the keybinding help popup (opened via 'h' or
+	// '?') has focus — mirrors detailMode. Unlike detailMode there's no
+	// snapshot data: the help text is static.
+	helpMode bool
+
 	cgroupCPUPrevUsageUsec int64
 	cgroupCPUPrevTime      time.Time
 	cgroupCPUHasBaseline   bool
@@ -439,6 +444,16 @@ func (s *monitorState) startDetailView() bool {
 // closeDetailView closes the process-details popup (Enter/Esc/q).
 func (s *monitorState) closeDetailView() {
 	s.detailMode = false
+}
+
+// openHelpView opens the keybinding help popup ('h' or '?').
+func (s *monitorState) openHelpView() {
+	s.helpMode = true
+}
+
+// closeHelpView closes the keybinding help popup (Enter/Esc/q).
+func (s *monitorState) closeHelpView() {
+	s.helpMode = false
 }
 
 // columnLabel ports col_header()'s arrow-appending: adds ▼ (descending)

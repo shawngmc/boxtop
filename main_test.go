@@ -165,6 +165,74 @@ func TestHandleDetailKeyBlocksStrayKeysAndCloses(t *testing.T) {
 	}
 }
 
+func TestHandleNormalKeyOpensHelpView(t *testing.T) {
+	for _, r := range []rune{'h', 'H', '?'} {
+		s := newMonitorState()
+		redraw, quit := handleNormalKey(s, keyRune(r))
+		if !redraw || quit {
+			t.Fatalf("%q: redraw=%v quit=%v, want redraw=true quit=false", r, redraw, quit)
+		}
+		if !s.helpMode {
+			t.Errorf("%q did not open helpMode", r)
+		}
+	}
+}
+
+// TestHandleEventDispatchesHelpModeBeforeNormalKeys confirms handleEvent
+// routes keys to handleHelpKey (not handleNormalKey) while helpMode is set,
+// same concern TestHandleEventDispatchesDetailModeBeforeNormalKeys covers
+// for detailMode.
+func TestHandleEventDispatchesHelpModeBeforeNormalKeys(t *testing.T) {
+	s := newMonitorState()
+	s.helpMode = true
+
+	redraw, quit := handleEvent(nil, s, tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if redraw || quit {
+		t.Errorf("KeyDown while helpMode: redraw=%v quit=%v, want both false", redraw, quit)
+	}
+	if s.cursor != 0 {
+		t.Errorf("cursor moved while helpMode was open: %d, want 0", s.cursor)
+	}
+
+	redraw, quit = handleEvent(nil, s, tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if !redraw || quit {
+		t.Errorf("Escape while helpMode: redraw=%v quit=%v, want redraw=true quit=false", redraw, quit)
+	}
+	if s.helpMode {
+		t.Error("Escape did not close helpMode")
+	}
+}
+
+func TestHandleHelpKeyBlocksStrayKeysAndCloses(t *testing.T) {
+	s := newMonitorState()
+	s.helpMode = true
+
+	redraw, quit := handleHelpKey(s, keyRune('a'))
+	if redraw || quit {
+		t.Errorf("stray key 'a': redraw=%v quit=%v, want both false", redraw, quit)
+	}
+	if !s.helpMode {
+		t.Error("a stray keypress closed the help popup")
+	}
+
+	redraw, quit = handleHelpKey(s, keyRune('q'))
+	if !redraw || quit {
+		t.Errorf("'q': redraw=%v quit=%v, want redraw=true quit=false", redraw, quit)
+	}
+	if s.helpMode {
+		t.Error("'q' did not close helpMode")
+	}
+
+	s.helpMode = true
+	redraw, quit = handleHelpKey(s, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if !redraw || quit {
+		t.Errorf("Enter: redraw=%v quit=%v, want redraw=true quit=false", redraw, quit)
+	}
+	if s.helpMode {
+		t.Error("Enter did not close helpMode")
+	}
+}
+
 func TestHandleNormalKeyXWithNothingSelectedIsNoop(t *testing.T) {
 	s := newMonitorState() // currentProcs is nil, cursor is 0
 

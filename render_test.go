@@ -207,3 +207,49 @@ func TestDrawFrameDetailPopup(t *testing.T) {
 		t.Error("main footer did not show the detail-mode hint")
 	}
 }
+
+func TestDrawFrameHelpPopup(t *testing.T) {
+	screen := newTestScreen(t, 100, 24)
+	state := newMonitorState()
+	data := testFrameData([]Process{
+		{PID: 1, Name: "init", NameLower: "init", Cmd: "/sbin/init"},
+	})
+
+	state.helpMode = true
+	drawFrame(screen, state, data)
+
+	w, h := screen.Size()
+	for _, want := range []string{
+		"Keybindings",
+		"Navigation",
+		"move the cursor",
+		"Sorting",
+		"Filter",
+		"Process actions",
+		"kill selected process",
+		"this help screen",
+		"quit (or close a popup)",
+	} {
+		if _, ok := findRow(screen, w, h, want); !ok {
+			t.Errorf("help popup text %q not found on screen", want)
+		}
+	}
+
+	if _, ok := findRow(screen, w, h, "Keybinding help — [Enter/Esc/q] close"); !ok {
+		t.Error("main footer did not show the help-mode hint")
+	}
+}
+
+func TestDrawFrameFooterMentionsHelpKey(t *testing.T) {
+	screen := newTestScreen(t, 100, 24)
+	state := newMonitorState()
+	data := testFrameData([]Process{
+		{PID: 1, Name: "init", NameLower: "init", Cmd: "/sbin/init"},
+	})
+	drawFrame(screen, state, data)
+
+	w, h := screen.Size()
+	if _, ok := findRow(screen, w, h, "Help: [h]"); !ok {
+		t.Error("default footer did not advertise the help key")
+	}
+}
