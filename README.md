@@ -61,7 +61,7 @@ instructions.
   skip straight to the bracketed name, saving a syscall per newly-seen
   kthread. RSS needs no such fix — it's already 0 for kernel threads and
   parsed from that same single `/stat` read at no extra cost.
-- **Static one-tick non-interactive print**
+
 
 ## AI Disclosure
 Claude Code was used to help write this, including the original python
