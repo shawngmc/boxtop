@@ -23,14 +23,23 @@ func newTestScreen(t *testing.T, w, h int) tcell.SimulationScreen {
 }
 
 // testFrameData builds a minimal frameData around a fixed process fixture —
-// memory limit fields just need to be non-zero so drawFrame's percentage
-// math doesn't divide by zero; CPU/OOM/model fields stay at their "not
-// available" zero values so those optional sections are skipped.
+// the RAM meter just needs a non-zero total so drawFrame's percentage math
+// doesn't divide by zero; CPU/Swap/OOM/model fields stay "unavailable" so
+// those optional sections render their placeholder text instead of a bar.
 func testFrameData(procs []Process) frameData {
 	return frameData{
-		maxBytes:  100 * 1024 * 1024,
-		currBytes: 50 * 1024 * 1024,
-		procs:     procs,
+		cgroupMeters: [3]meter{
+			meterRAM:  memMeter("RAM", 50*1024*1024, 100*1024*1024, ""),
+			meterCPU:  unavailableMeter("CPU", "no cgroup cpu controller found"),
+			meterSwap: unavailableMeter("SWAP", "no swap controller found"),
+		},
+		systemMeters: [3]meter{
+			meterRAM:  unavailableMeter("RAM", "not available in tests"),
+			meterCPU:  unavailableMeter("CPU", "not available in tests"),
+			meterSwap: unavailableMeter("SWAP", "not available in tests"),
+		},
+		cgroupRAMMaxBytes: 100 * 1024 * 1024,
+		procs:             procs,
 	}
 }
 
@@ -135,6 +144,45 @@ func TestDrawFrameAutoScrollsCursorIntoView(t *testing.T) {
 
 	if _, ok := findRow(screen, w, h, procs[0].Name); ok {
 		t.Errorf("first process %q is still visible; expected the viewport to have scrolled away from it", procs[0].Name)
+	}
+}
+
+// TestDrawFrameTruncatedListFoldsScrollIndicatorIntoFooterRule checks the
+// compact "-----[Processes: first-last/total]-----" scroll-position
+// indicator: when the process list doesn't fit, that indicator is folded
+// into the footer's dashed rule line rather than spending a whole extra row
+// on it, so every row above the footer is an actual process row.
+func TestDrawFrameTruncatedListFoldsScrollIndicatorIntoFooterRule(t *testing.T) {
+	const n = 60
+	procs := make([]Process, n)
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("proc%02d", i)
+		procs[i] = Process{PID: i + 1, Name: name, NameLower: name, Cmd: name}
+	}
+
+	screen := newTestScreen(t, 80, 16)
+	state := newMonitorState()
+	state.sortCol = sortPID
+	state.sortReverse = false
+	state.sortDirty = true
+
+	drawFrame(screen, state, testFrameData(procs))
+	w, h := screen.Size()
+
+	y, ok := findRow(screen, w, h, "[Processes: 1-")
+	if !ok {
+		t.Fatal("footer rule missing the \"[Processes: first-last/total]\" scroll indicator")
+	}
+	row := rowText(screen, w, y)
+	if !strings.HasPrefix(strings.TrimRight(row, " "), "-----[Processes: 1-") {
+		t.Errorf("scroll-indicator row = %q, want it to start with a dashed rule like \"-----[Processes: 1-N/%d]\"", row, n)
+	}
+	if !strings.Contains(row, fmt.Sprintf("/%d]", n)) {
+		t.Errorf("scroll-indicator row = %q, want it to end the bracket with the total count /%d]", row, n)
+	}
+
+	if _, ok := findRow(screen, w, h, "scroll for more"); ok {
+		t.Error("the old \"... showing N-M of T — scroll for more ...\" line should no longer be drawn")
 	}
 }
 
@@ -251,5 +299,121 @@ func TestDrawFrameFooterMentionsHelpKey(t *testing.T) {
 	w, h := screen.Size()
 	if _, ok := findRow(screen, w, h, "Help: [h]"); !ok {
 		t.Error("default footer did not advertise the help key")
+	}
+}
+
+func TestMemMeter(t *testing.T) {
+	m := memMeter("RAM", 512*1024*1024, 1024*1024*1024, "")
+	if !m.have || m.frac != 0.5 {
+		t.Errorf("memMeter: have=%v frac=%v, want have=true frac=0.5", m.have, m.frac)
+	}
+	if m.detail != "512M/1.0G" {
+		t.Errorf("memMeter detail = %q, want %q", m.detail, "512M/1.0G")
+	}
+	if m.pctText != " 50.0%" {
+		t.Errorf("memMeter pctText = %q, want %q", m.pctText, " 50.0%")
+	}
+
+	suffixed := memMeter("RAM", 100, 200, " (host)")
+	if !strings.HasSuffix(suffixed.detail, " (host)") {
+		t.Errorf("memMeter with suffix = %q, want it to end with \" (host)\"", suffixed.detail)
+	}
+
+	zero := memMeter("SWAP", 0, 0, "")
+	if zero.frac != 0 {
+		t.Errorf("memMeter with zero total: frac = %v, want 0 (no divide-by-zero)", zero.frac)
+	}
+}
+
+func TestUnavailableMeter(t *testing.T) {
+	m := unavailableMeter("SWAP", "no swap controller found")
+	if m.have {
+		t.Error("unavailableMeter: have = true, want false")
+	}
+	if m.unavailableText != "no swap controller found" {
+		t.Errorf("unavailableMeter reason = %q, want %q", m.unavailableText, "no swap controller found")
+	}
+}
+
+func TestCgroupCPUMeter(t *testing.T) {
+	if m := cgroupCPUMeter(0, "", false, nil); m.have {
+		t.Error("cgroupCPUMeter with haveLimit=false: have = true, want false")
+	}
+
+	measuring := cgroupCPUMeter(2, cpuSourceQuota, true, nil)
+	if !measuring.have || !measuring.measuring {
+		t.Errorf("cgroupCPUMeter with nil pct: have=%v measuring=%v, want have=true measuring=true", measuring.have, measuring.measuring)
+	}
+	if measuring.detail != "2.00 cores (quota)" {
+		t.Errorf("cgroupCPUMeter detail = %q, want %q", measuring.detail, "2.00 cores (quota)")
+	}
+
+	pct := 42.5
+	m := cgroupCPUMeter(2, cpuSourceCPUSet, true, &pct)
+	if m.measuring || m.frac != 0.425 {
+		t.Errorf("cgroupCPUMeter: measuring=%v frac=%v, want measuring=false frac=0.425", m.measuring, m.frac)
+	}
+	if m.detail != "2.00 cores (cpuset)" {
+		t.Errorf("cgroupCPUMeter detail = %q, want %q", m.detail, "2.00 cores (cpuset)")
+	}
+}
+
+func TestSystemCPUMeter(t *testing.T) {
+	if m := systemCPUMeter(nil, false, 4); m.have {
+		t.Error("systemCPUMeter with ok=false: have = true, want false")
+	}
+
+	measuring := systemCPUMeter(nil, true, 4)
+	if !measuring.have || !measuring.measuring || measuring.detail != "4 cores" {
+		t.Errorf("systemCPUMeter measuring case = %+v, want have=true measuring=true detail=\"4 cores\"", measuring)
+	}
+
+	pct := 10.0
+	m := systemCPUMeter(&pct, true, 4)
+	if m.measuring || m.frac != 0.1 {
+		t.Errorf("systemCPUMeter: measuring=%v frac=%v, want measuring=false frac=0.1", m.measuring, m.frac)
+	}
+}
+
+func TestBuildCPUInfoLine(t *testing.T) {
+	if got := buildCPUInfoLine("", false, 0, 0, false, false); got != "" {
+		t.Errorf("buildCPUInfoLine with nothing available = %q, want empty string", got)
+	}
+	if got := buildCPUInfoLine("Generic CPU", true, 0, 0, false, false); got != "CPU: Generic CPU" {
+		t.Errorf("buildCPUInfoLine model-only = %q", got)
+	}
+	got := buildCPUInfoLine("Generic CPU", true, 2400, 3700, true, true)
+	want := "CPU: Generic CPU  |  2400/3700 MHz (cur/max)"
+	if got != want {
+		t.Errorf("buildCPUInfoLine = %q, want %q", got, want)
+	}
+}
+
+// TestDrawFrameShowsCgroupAndSystemMeters checks the restructured top bar
+// renders both scopes' RAM meters (the "cgroup"/"system" column split is
+// the core of this feature — see the CPU/SWAP meter unit tests above for
+// the formatting details each row shares).
+func TestDrawFrameShowsCgroupAndSystemMeters(t *testing.T) {
+	screen := newTestScreen(t, 100, 24)
+	state := newMonitorState()
+	data := testFrameData(nil)
+	drawFrame(screen, state, data)
+
+	w, h := screen.Size()
+	if _, ok := findRow(screen, w, h, "cgroup"); !ok {
+		t.Error("top bar missing the \"cgroup\" column header")
+	}
+	if _, ok := findRow(screen, w, h, "system"); !ok {
+		t.Error("top bar missing the \"system\" column header")
+	}
+	if y, ok := findRow(screen, w, h, "RAM"); ok {
+		if !strings.Contains(rowText(screen, w, y), "50.0%") {
+			t.Errorf("RAM meter row %q missing expected 50.0%% (testFrameData is 50/100 MB)", rowText(screen, w, y))
+		}
+	} else {
+		t.Error("top bar missing the RAM meter row")
+	}
+	if _, ok := findRow(screen, w, h, "unavailable (not available in tests)"); !ok {
+		t.Error("top bar missing an \"unavailable\" system meter row")
 	}
 }

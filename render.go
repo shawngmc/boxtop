@@ -47,6 +47,41 @@ func drawBar(screen tcell.Screen, x, y, length int, frac float64, stops []colorS
 	return x + length
 }
 
+// meterBarWidth is the fixed bar length for the top bar's side-by-side
+// cgroup/system meters — shorter than the 30-char process/summary bars
+// used to have, since two of these now have to fit side by side in half a
+// terminal's width.
+const meterBarWidth = 20
+
+// drawMeter renders one row of the top bar's cgroup/system grid — a label,
+// then either a colored bar+percentage+detail, an "unavailable" reason, or
+// a "measuring..." placeholder while a CPU meter's first delta sample is
+// still pending. width is the column's available width (dividerCol for the
+// cgroup column, w-dividerCol for the system column): unlike the rest of
+// the frame, where an overlong line just clips at the screen's right edge,
+// a meter that ran long here would otherwise get overwritten mid-character
+// by the next column's own drawText calls on the same row — so the
+// variable-length part of each line (the detail text) is explicitly
+// truncated to what's left of the column, never left to chance.
+func drawMeter(screen tcell.Screen, x, y, width int, m meter) {
+	switch {
+	case !m.have:
+		text := fmt.Sprintf("%-5s unavailable (%s)", m.label, m.unavailableText)
+		drawText(screen, x, y, truncateVisible(text, width), tcell.StyleDefault)
+	case m.measuring:
+		text := fmt.Sprintf("%-5s measuring...  %s", m.label, m.detail)
+		drawText(screen, x, y, truncateVisible(text, width), tcell.StyleDefault)
+	default:
+		prefix := fmt.Sprintf("%-5s[", m.label)
+		tx := drawText(screen, x, y, prefix, tcell.StyleDefault)
+		barX := drawBar(screen, tx, y, meterBarWidth, m.frac, m.stops)
+		pctPart := fmt.Sprintf("] %s ", m.pctText)
+		tx = drawText(screen, barX, y, pctPart, gradientStyle(m.frac, m.stops))
+		detailWidth := width - len(prefix) - meterBarWidth - len(pctPart)
+		drawText(screen, tx, y, truncateVisible(m.detail, detailWidth), tcell.StyleDefault)
+	}
+}
+
 // cursorRowStyle applies reverse video when this is the cursor row,
 // preserving each column's existing gradient danger-coloring (e.g. a red
 // RSS value becomes a red background) instead of replacing it outright.
@@ -57,6 +92,103 @@ func cursorRowStyle(base tcell.Style, isCursorRow bool) tcell.Style {
 	return base
 }
 
+// meter is one bar-and-text row of the top bar's cgroup/system RAM/CPU/Swap
+// grid — a generic value that both drawFrame (colored, side-by-side) and
+// writeNonInteractiveFrame (plain, stacked) can render without either one
+// re-deriving the underlying numbers, which used to be formatted twice
+// (once per renderer) before this type existed.
+type meter struct {
+	label           string // "RAM", "CPU", "SWAP"
+	have            bool   // false -> show unavailableText instead of a bar
+	measuring       bool   // true -> show "measuring..." instead of a bar
+	unavailableText string
+	frac            float64 // 0..1, drives both the bar fill and its gradient color
+	pctText         string  // "42.3%", precomputed so callers never re-derive it
+	detail          string  // "1.2G/4.0G", "2.00 cores (quota)", "8 cores", ...
+	stops           []colorStop
+}
+
+// meterRAM/meterCPU/meterSwap index a [3]meter in the fixed row order used
+// by both the cgroup and system columns.
+const (
+	meterRAM = iota
+	meterCPU
+	meterSwap
+)
+
+// memMeter builds a RAM or Swap meter from a used/total byte pair. suffix is
+// appended to the detail text (e.g. " (host)" when a cgroup has no real
+// limit and is being measured against host totals instead) — pass "" for
+// the system-wide meters, which have no such distinction.
+func memMeter(label string, usedBytes, totalBytes int64, suffix string) meter {
+	var frac float64
+	if totalBytes > 0 {
+		frac = float64(usedBytes) / float64(totalBytes)
+	}
+	return meter{
+		label:   label,
+		have:    true,
+		frac:    frac,
+		pctText: fmt.Sprintf("%5.1f%%", frac*100),
+		detail:  fmt.Sprintf("%s/%s%s", formatBytesCompact(usedBytes), formatBytesCompact(totalBytes), suffix),
+		stops:   summaryStops,
+	}
+}
+
+// unavailableMeter builds a meter with no bar, e.g. a cgroup without a swap
+// controller or a host with swap disabled entirely.
+func unavailableMeter(label, reason string) meter {
+	return meter{label: label, have: false, unavailableText: reason}
+}
+
+// cgroupCPUMeter builds the cgroup CPU meter from the same limit/percent
+// data drawFrame's CPU Limit line used to format directly.
+func cgroupCPUMeter(coresLimit float64, source cpuLimitSource, haveLimit bool, pct *float64) meter {
+	if !haveLimit {
+		return unavailableMeter("CPU", "no cgroup cpu controller found")
+	}
+	sourceLabel := map[cpuLimitSource]string{
+		cpuSourceQuota:  "quota",
+		cpuSourceCPUSet: "cpuset",
+		cpuSourceHost:   "host, unlimited",
+	}[source]
+	detail := fmt.Sprintf("%.2f cores (%s)", coresLimit, sourceLabel)
+	if pct == nil {
+		return meter{label: "CPU", have: true, measuring: true, detail: detail, stops: summaryStops}
+	}
+	frac := *pct / 100
+	return meter{
+		label:   "CPU",
+		have:    true,
+		frac:    frac,
+		pctText: fmt.Sprintf("%5.1f%%", *pct),
+		detail:  detail,
+		stops:   summaryStops,
+	}
+}
+
+// systemCPUMeter builds the system-wide CPU meter from sampleHostCPUPct's
+// result: ok=false means /proc/stat couldn't be read at all, pct=nil means
+// it was read but no baseline exists yet (first tick).
+func systemCPUMeter(pct *float64, ok bool, numCPU int) meter {
+	if !ok {
+		return unavailableMeter("CPU", "could not read /proc/stat")
+	}
+	detail := fmt.Sprintf("%d cores", numCPU)
+	if pct == nil {
+		return meter{label: "CPU", have: true, measuring: true, detail: detail, stops: summaryStops}
+	}
+	frac := *pct / 100
+	return meter{
+		label:   "CPU",
+		have:    true,
+		frac:    frac,
+		pctText: fmt.Sprintf("%5.1f%%", *pct),
+		detail:  detail,
+		stops:   summaryStops,
+	}
+}
+
 // frameData is an immutable snapshot of everything a frame needs to draw,
 // captured once per poll by collectFrame. Splitting collection from drawing
 // is what lets keypresses (scroll/sort) trigger a cheap redraw from the last
@@ -64,23 +196,19 @@ func cursorRowStyle(base tcell.Style, isCursorRow bool) tcell.Style {
 // re-running the time-delta CPU sampling, which a per-keystroke poll would
 // corrupt with near-zero intervals.
 type frameData struct {
-	maxBytes, currBytes int64
-	noLimit             bool
-	coresLimit          float64
-	cpuSource           cpuLimitSource
-	haveCPULimit        bool
-	cpuPct              *float64 // summary cgroup CPU %, nil while measuring
-	procs               []Process
-	totalRSSKb          int64
-	oomKills            int64
-	haveOOMData         bool
+	cgroupMeters [3]meter // [meterRAM], [meterCPU], [meterSwap]
+	systemMeters [3]meter
+	cpuInfoLine  string // CPU model + cur/max clockspeed, unchanged content from before, now its own row
 
-	cpuModel     string
-	haveCPUModel bool
-	cpuCurMHz    float64
-	cpuMaxMHz    float64
-	haveCPUCur   bool
-	haveCPUMax   bool
+	// cgroupRAMMaxBytes is the cgroup memory limit in bytes — kept outside
+	// the meter struct because drawFrame also needs it to size each
+	// process row's RSS-fraction bar, not just for display.
+	cgroupRAMMaxBytes int64
+
+	procs       []Process
+	totalRSSKb  int64
+	oomKills    int64
+	haveOOMData bool
 }
 
 // collectFrame ports the per-tick data gathering: cgroup memory/CPU limits,
@@ -100,27 +228,77 @@ func collectFrame(state *monitorState) (frameData, error) {
 		return frameData{}, fmt.Errorf("could not read cgroup memory values — are resource limits set?")
 	}
 
+	host, haveHost := readHostMeminfo()
+
 	// When memory.max is "max", readCgroupVal falls through to
 	// memory.limit_in_bytes, which reports the kernel's "unlimited"
 	// sentinel (~LONG_MAX). That renders as a nonsensical exabyte-scale
 	// limit, so treat any limit at or above host RAM as "no cgroup limit"
 	// and use the host's total memory as the denominator instead.
-	noLimit := false
-	if hostTotal, ok := readHostMemTotal(); ok && (maxBytes <= 0 || maxBytes > hostTotal) {
-		maxBytes = hostTotal
-		noLimit = true
+	ramNoLimit := false
+	if haveHost && (maxBytes <= 0 || maxBytes > host.totalKB*1024) {
+		maxBytes = host.totalKB * 1024
+		ramNoLimit = true
 	}
+	ramSuffix := ""
+	if ramNoLimit {
+		ramSuffix = " (host)"
+	}
+	cgroupRAM := memMeter("RAM", currBytes, maxBytes, ramSuffix)
 
 	coresLimit, cpuSource, haveCPULimit := readCgroupCPULimit()
 	var cpuPct *float64
 	if haveCPULimit {
 		cpuPct = state.sampleCgroupCPUPct(coresLimit)
 	}
+	cgroupCPU := cgroupCPUMeter(coresLimit, cpuSource, haveCPULimit, cpuPct)
+
+	swapCurr, haveSwapCurr := readCgroupSwapCurrent()
+	var cgroupSwap meter
+	switch {
+	case !haveSwapCurr:
+		cgroupSwap = unavailableMeter("SWAP", "no swap controller found")
+	default:
+		swapMax, haveSwapMax := readCgroupSwapMax()
+		swapSuffix := ""
+		if !haveSwapMax {
+			swapMax = host.swapTotalKB * 1024
+			swapSuffix = " (host)"
+		}
+		if swapMax <= 0 {
+			// Either the cgroup has an unbounded swap limit and the host
+			// itself has no swap to fall back to, or the swap limit really
+			// is zero — either way there's nothing meaningful to show as a
+			// used/total bar.
+			cgroupSwap = unavailableMeter("SWAP", "no swap configured")
+		} else {
+			cgroupSwap = memMeter("SWAP", swapCurr, swapMax, swapSuffix)
+		}
+	}
+
+	var systemRAM, systemSwap, systemCPU meter
+	if haveHost {
+		availKB := host.availableKB
+		usedKB := host.totalKB - availKB
+		systemRAM = memMeter("RAM", usedKB*1024, host.totalKB*1024, "")
+		if host.swapTotalKB <= 0 {
+			systemSwap = unavailableMeter("SWAP", "no swap configured")
+		} else {
+			usedSwapKB := host.swapTotalKB - host.swapFreeKB
+			systemSwap = memMeter("SWAP", usedSwapKB*1024, host.swapTotalKB*1024, "")
+		}
+	} else {
+		systemRAM = unavailableMeter("RAM", "could not read /proc/meminfo")
+		systemSwap = unavailableMeter("SWAP", "could not read /proc/meminfo")
+	}
+	hostPct, hostOK := state.sampleHostCPUPct()
+	systemCPU = systemCPUMeter(hostPct, hostOK, runtimeNumCPU())
 
 	oomKills, haveOOMData := readCgroupOOMKills()
 
 	cpuModel, haveCPUModel := readCPUModel()
 	cpuCurMHz, cpuMaxMHz, haveCPUCur, haveCPUMax := readCPUFreqMHz()
+	cpuInfoLine := buildCPUInfoLine(cpuModel, haveCPUModel, cpuCurMHz, cpuMaxMHz, haveCPUCur, haveCPUMax)
 
 	procs := buildProcesses(state, coresLimit)
 	// A fresh poll yields a brand-new unsorted slice, so the next drawFrame
@@ -132,25 +310,38 @@ func collectFrame(state *monitorState) (frameData, error) {
 	}
 
 	return frameData{
-		maxBytes:     maxBytes,
-		currBytes:    currBytes,
-		noLimit:      noLimit,
-		coresLimit:   coresLimit,
-		cpuSource:    cpuSource,
-		haveCPULimit: haveCPULimit,
-		cpuPct:       cpuPct,
-		procs:        procs,
-		totalRSSKb:   totalRSSKb,
-		oomKills:     oomKills,
-		haveOOMData:  haveOOMData,
-
-		cpuModel:     cpuModel,
-		haveCPUModel: haveCPUModel,
-		cpuCurMHz:    cpuCurMHz,
-		cpuMaxMHz:    cpuMaxMHz,
-		haveCPUCur:   haveCPUCur,
-		haveCPUMax:   haveCPUMax,
+		cgroupMeters:      [3]meter{meterRAM: cgroupRAM, meterCPU: cgroupCPU, meterSwap: cgroupSwap},
+		systemMeters:      [3]meter{meterRAM: systemRAM, meterCPU: systemCPU, meterSwap: systemSwap},
+		cpuInfoLine:       cpuInfoLine,
+		cgroupRAMMaxBytes: maxBytes,
+		procs:             procs,
+		totalRSSKb:        totalRSSKb,
+		oomKills:          oomKills,
+		haveOOMData:       haveOOMData,
 	}, nil
+}
+
+// buildCPUInfoLine formats the CPU model + cur/max clockspeed line, ported
+// unchanged from the text that used to be appended to the CPU Limit line —
+// it's host hardware info independent of cgroup vs. system scope, so it now
+// gets its own full-width row instead.
+func buildCPUInfoLine(model string, haveModel bool, curMHz, maxMHz float64, haveCur, haveMax bool) string {
+	var parts []string
+	if haveModel {
+		parts = append(parts, model)
+	}
+	switch {
+	case haveCur && haveMax:
+		parts = append(parts, fmt.Sprintf("%.0f/%.0f MHz (cur/max)", curMHz, maxMHz))
+	case haveCur:
+		parts = append(parts, fmt.Sprintf("%.0f MHz (cur)", curMHz))
+	case haveMax:
+		parts = append(parts, fmt.Sprintf("%.0f MHz (max)", maxMHz))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "CPU: " + strings.Join(parts, "  |  ")
 }
 
 // drawFrame ports render(): builds one frame's contents into the screen
@@ -164,82 +355,28 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 	screen.Clear()
 	w, h := screen.Size()
 
-	maxBytes := data.maxBytes
-	maxMB := maxBytes / (1024 * 1024)
-	currMB := data.currBytes / (1024 * 1024)
-	availMB := maxMB - currMB
-	var pctFrac float64
-	if maxMB > 0 {
-		pctFrac = float64(currMB) / float64(maxMB)
-	}
+	maxBytes := data.cgroupRAMMaxBytes
+
+	// dividerCol starts the system column at the horizontal midpoint of the
+	// terminal so it scales with width, rather than a fixed offset.
+	dividerCol := w / 2
 
 	y := 0
 
-	// --- RAM summary (left side) ---
-	limitLabel := "Used/Limit"
-	if data.noLimit {
-		limitLabel = "Used/Host"
-	}
-	memUsage := fmt.Sprintf("RAM Usage : %d/%d MB (%s), %d MB Free", currMB, maxMB, limitLabel, availMB)
-	drawText(screen, 0, y, memUsage, tcell.StyleDefault)
-
-	// --- CPU summary (right side): starts at the horizontal midpoint of
-	// the terminal so it scales with width, rather than the Python
-	// version's fixed DIVIDER_COL padding.
-	dividerCol := w / 2
-	coresLimit := data.coresLimit
-
-	// CPU make/model plus current/max clockspeed, appended to the CPU Limit
-	// line. Any piece can be missing independently (a VM without a cpufreq
-	// driver has speeds but a generic model string, a masked /proc/cpuinfo
-	// in some containers has neither), so each part is assembled only if its
-	// data was actually read. The combined line is left unclipped — tcell's
-	// SetContent silently drops cells past the screen edge — so it just
-	// truncates naturally in a narrow terminal instead of needing its own
-	// width accounting.
-	var cpuInfoParts []string
-	if data.haveCPUModel {
-		cpuInfoParts = append(cpuInfoParts, data.cpuModel)
-	}
-	switch {
-	case data.haveCPUCur && data.haveCPUMax:
-		cpuInfoParts = append(cpuInfoParts, fmt.Sprintf("%.0f/%.0f MHz (cur/max)", data.cpuCurMHz, data.cpuMaxMHz))
-	case data.haveCPUCur:
-		cpuInfoParts = append(cpuInfoParts, fmt.Sprintf("%.0f MHz (cur)", data.cpuCurMHz))
-	case data.haveCPUMax:
-		cpuInfoParts = append(cpuInfoParts, fmt.Sprintf("%.0f MHz (max)", data.cpuMaxMHz))
-	}
-	cpuInfoSuffix := ""
-	if len(cpuInfoParts) > 0 {
-		cpuInfoSuffix = "  |  " + strings.Join(cpuInfoParts, "  ")
-	}
-
-	if data.haveCPULimit {
-		sourceLabel := map[cpuLimitSource]string{
-			cpuSourceQuota:  "cgroup quota",
-			cpuSourceCPUSet: "cpuset",
-			cpuSourceHost:   "host, no limit set",
-		}[data.cpuSource]
-		cpuLimitText := fmt.Sprintf("CPU Limit : %.2f cores (%s)%s", coresLimit, sourceLabel, cpuInfoSuffix)
-		drawText(screen, dividerCol, y, cpuLimitText, tcell.StyleDefault)
-	} else {
-		drawText(screen, dividerCol, y, "CPU Limit : unavailable (no cgroup cpu controller found)"+cpuInfoSuffix, tcell.StyleDefault)
-	}
+	drawText(screen, 0, y, "cgroup", tcell.StyleDefault.Bold(true))
+	drawText(screen, dividerCol, y, "system", tcell.StyleDefault.Bold(true))
 	y++
 
-	drawText(screen, 0, y, "  Percent : [", tcell.StyleDefault)
-	barX := drawBar(screen, 13, y, 30, pctFrac, summaryStops)
-	drawText(screen, barX, y, fmt.Sprintf("] %5.1f%%", pctFrac*100), gradientStyle(pctFrac, summaryStops))
+	for i := 0; i < 3; i++ {
+		// dividerCol-1 leaves a one-column gap so a truncated cgroup detail
+		// text never butts directly up against the system column's label.
+		drawMeter(screen, 0, y, dividerCol-1, data.cgroupMeters[i])
+		drawMeter(screen, dividerCol, y, w-dividerCol, data.systemMeters[i])
+		y++
+	}
 
-	if data.haveCPULimit {
-		if data.cpuPct == nil {
-			drawText(screen, dividerCol, y, "  Percent : measuring...", tcell.StyleDefault)
-		} else {
-			cpuFrac := *data.cpuPct / 100
-			drawText(screen, dividerCol, y, "  Percent : [", tcell.StyleDefault)
-			cbarX := drawBar(screen, dividerCol+13, y, 30, cpuFrac, summaryStops)
-			drawText(screen, cbarX, y, fmt.Sprintf("] %5.1f%%", *data.cpuPct), gradientStyle(cpuFrac, summaryStops))
-		}
+	if data.cpuInfoLine != "" {
+		drawText(screen, 0, y, data.cpuInfoLine, tcell.StyleDefault)
 	}
 	y++
 
@@ -324,12 +461,11 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 	total := len(procs)
 	state.clampCursor(total)
 	truncated := total > maxProcRows
-	shownRows := maxProcRows
-	if truncated {
-		shownRows = max(1, maxProcRows-1) // reserve a row for the scroll-position status line
-	}
-	state.syncScrollToCursor(shownRows)
-	visible := state.visibleProcesses(procs, shownRows)
+	// The scroll-position indicator when truncated is folded into the
+	// footer rule line below rather than reserving a row for it here, so
+	// every one of maxProcRows goes to an actual process row.
+	state.syncScrollToCursor(maxProcRows)
+	visible := state.visibleProcesses(procs, maxProcRows)
 	state.tableTop = tableTop
 	state.tableRowCount = len(visible)
 
@@ -359,7 +495,7 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 			cpuStyle = tcell.StyleDefault
 		} else {
 			var cpuFrac float64
-			if coresLimit > 0 {
+			if data.cgroupMeters[meterCPU].have {
 				cpuFrac = *p.CPUPct / 100
 			}
 			cpuText = fmt.Sprintf("%*.1f%%", cpuWidth-1, *p.CPUPct)
@@ -377,21 +513,29 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		y++
 	}
 
+	// Jump to the fixed footer position — a short/filtered list stops well
+	// short of it, since every row above is now an actual process row (see
+	// the maxProcRows comment above — there's no separate reserved line to
+	// account for here anymore).
+	y = footerY
+
+	// When the list is scrolled, a "[Processes: first-last/total]" indicator
+	// is folded into this rule line (less/tmux-style) instead of spending a
+	// whole row on it, which is what let the process table above reclaim
+	// that row.
+	footerRuleText := rule
 	if truncated {
 		first := state.scrollOffset + 1
 		last := state.scrollOffset + len(visible)
-		drawText(screen, 0, y, fmt.Sprintf(" ... showing %d-%d of %d — scroll for more ...", first, last, total), tcell.StyleDefault)
-		y++
+		footerRuleText = footerRuleLine(len([]rune(rule)), fmt.Sprintf("[Processes: %d-%d/%d]", first, last, total))
 	}
-
-	// Jump to the fixed footer position — when truncated this is already
-	// where y landed, but a short/filtered list stops well short of it.
-	y = footerY
-
-	drawText(screen, 0, y, rule, tcell.StyleDefault)
+	drawText(screen, 0, y, footerRuleText, tcell.StyleDefault)
 	y++
-	procX := drawText(screen, 0, y, fmt.Sprintf(" Processes: %-5d  Sum of RSS: %.1f MB  (cgroup usage may include cache/shared mem not in RSS)",
-		total, float64(totalRSSKb)/1024), tcell.StyleDefault)
+	// Process count isn't repeated here — it's already in the footer rule
+	// line above, either as "[Processes: first-last/total]" when scrolled or,
+	// when the whole list fits, implied by the row count itself.
+	procX := drawText(screen, 0, y, fmt.Sprintf(" Sum of RSS: %.1f MB  (cgroup usage may include cache/shared mem not in RSS)",
+		float64(totalRSSKb)/1024), tcell.StyleDefault)
 	// OOM-kill counter: only shown when memory.events (or its v1
 	// memory.oom_control fallback) is actually readable — e.g. omitted
 	// outside a real memory-limited cgroup — since a bare "0" there would
@@ -625,6 +769,24 @@ func repeatRune(r rune, n int) string {
 		runes[i] = r
 	}
 	return string(runes)
+}
+
+// footerRuleLine builds the dashed rule above the footer, optionally with a
+// label (e.g. a "[Processes: 1-15/390]" scroll-position indicator) embedded
+// near its start — a `less`/`tmux`-style status rule, in place of a separate line
+// reserved just for that text. Returns a plain width-n dash rule when label
+// is empty, so this is a strict superset of repeatRune('-', n) for this
+// call site. A label too long for the width degrades to a plain rule rather
+// than overflowing or getting cut off mid-word.
+func footerRuleLine(width int, label string) string {
+	if label == "" {
+		return repeatRune('-', width)
+	}
+	prefix := "-----" + label
+	if len([]rune(prefix)) >= width {
+		return repeatRune('-', width)
+	}
+	return prefix + repeatRune('-', width-len([]rune(prefix)))
 }
 
 // truncateVisible trims s to at most w visible runes — a simpler

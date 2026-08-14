@@ -48,25 +48,100 @@ func readCgroupVal(filename string) (int64, bool) {
 	return 0, false
 }
 
-// readHostMemTotal returns the machine's total physical RAM in bytes, read
-// from MemTotal in /proc/meminfo (which is reported in kB). Used as the
-// fallback denominator when the cgroup imposes no real memory limit.
-func readHostMemTotal() (int64, bool) {
-	data, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0, false
-	}
-	line, ok := firstLineWithPrefix(string(data), "MemTotal:")
+// hostMeminfo holds the /proc/meminfo fields needed for the system-wide RAM
+// and Swap meters, plus the RAM noLimit fallback denominator.
+type hostMeminfo struct {
+	totalKB       int64
+	availableKB   int64
+	swapTotalKB   int64
+	swapFreeKB    int64
+	haveAvailable bool // false on kernels old enough to lack MemAvailable
+}
+
+// meminfoInt parses the kB value out of a /proc/meminfo line like
+// "MemTotal:       16384000 kB".
+func meminfoInt(data, prefix string) (int64, bool) {
+	line, ok := firstLineWithPrefix(data, prefix)
 	if !ok {
 		return 0, false
 	}
 	fields := strings.Fields(line)
-	if len(fields) >= 2 {
-		if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-			return kb * 1024, true
-		}
+	if len(fields) < 2 {
+		return 0, false
 	}
-	return 0, false
+	v, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// readHostMeminfo parses /proc/meminfo once for every field the top bar's
+// system-wide meters need: total/available RAM (available falls back to
+// MemFree on pre-3.14 kernels that lack MemAvailable) and total/free swap.
+// Returns (zero value, false) only if the file itself can't be read; a
+// single missing field just leaves its zero value in place (MemTotal is
+// required for a useful result, so its absence is treated as failure too).
+func readHostMeminfo() (hostMeminfo, bool) {
+	raw, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return hostMeminfo{}, false
+	}
+	data := string(raw)
+
+	totalKB, ok := meminfoInt(data, "MemTotal:")
+	if !ok {
+		return hostMeminfo{}, false
+	}
+
+	var m hostMeminfo
+	m.totalKB = totalKB
+	if avail, ok := meminfoInt(data, "MemAvailable:"); ok {
+		m.availableKB = avail
+		m.haveAvailable = true
+	} else if free, ok := meminfoInt(data, "MemFree:"); ok {
+		m.availableKB = free
+	}
+	m.swapTotalKB, _ = meminfoInt(data, "SwapTotal:")
+	m.swapFreeKB, _ = meminfoInt(data, "SwapFree:")
+	return m, true
+}
+
+// readCgroupSwapCurrent returns the cgroup's current swap usage in bytes.
+// cgroup v2 exposes this directly; v1 has no standalone swap counter, only
+// memory+swap combined (memory.memsw.*), so it's derived by subtracting the
+// plain memory usage from the combined figure.
+func readCgroupSwapCurrent() (int64, bool) {
+	if v, ok := readCgroupVal("memory.swap.current"); ok {
+		return v, true
+	}
+	memsw, ok1 := readCgroupVal("memory.memsw.usage_in_bytes")
+	mem, ok2 := readCgroupVal("memory.usage_in_bytes")
+	if ok1 && ok2 {
+		v := memsw - mem
+		if v < 0 {
+			v = 0
+		}
+		return v, true
+	}
+	return 0, false // no swap controller available (e.g. v1 w/o swapaccount=1)
+}
+
+// readCgroupSwapMax returns the cgroup's swap limit in bytes. Returns
+// (0, false) both when there's genuinely no swap controller and when the
+// limit is unbounded ("max" on v2, or no v1 memsw limit set) — callers fall
+// back to the host's total swap as the denominator in that case, mirroring
+// readCgroupVal's memory.max "max"-sentinel handling in collectFrame.
+func readCgroupSwapMax() (int64, bool) {
+	if v, ok := readCgroupVal("memory.swap.max"); ok {
+		return v, true
+	}
+	memswMax, ok1 := readCgroupVal("memory.memsw.limit_in_bytes")
+	memMax, ok2 := readCgroupVal("memory.limit_in_bytes")
+	if ok1 && ok2 && memswMax > memMax {
+		return memswMax - memMax, true
+	}
+	return 0, false // covers "max"/unbounded (v2) and no-limit (v1)
 }
 
 // cpuLimitSource mirrors the Python source strings ("quota"/"cpuset"/"host")
@@ -172,7 +247,7 @@ func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 // Returns (0, false) if neither file exposes the counter, which is the
 // expected case when boxtop isn't confined by a real memory-limited
 // cgroup (bare host, most WSL setups) — the same condition collectFrame
-// already detects via readHostMemTotal's noLimit fallback. Callers should
+// already detects via readHostMeminfo's noLimit fallback. Callers should
 // omit the OOM display entirely in that case rather than showing a
 // misleading "0", since 0 there doesn't mean "safe", it means "not
 // measured."

@@ -39,6 +39,8 @@ type cgroupDump struct {
 	CoresLimit   float64 `json:"cores_limit"`
 	CPUSource    string  `json:"cpu_source"`
 	HaveCPULimit bool    `json:"have_cpu_limit"`
+	SwapMaxBytes int64   `json:"swap_max_bytes"`
+	HaveSwapMax  bool    `json:"have_swap_max"`
 }
 
 // wantCPUSource mirrors cgroup.go's unexported cpuSourceQuota constant —
@@ -78,12 +80,13 @@ func TestCgroupDetectionInContainer(t *testing.T) {
 		t.Fatalf("building worker binary: %v\n%s", err, out)
 	}
 
-	const wantMemBytes = int64(256 * 1024 * 1024) // 256MiB, page-aligned so the kernel reports it back exactly
+	const wantMemBytes = int64(256 * 1024 * 1024)  // 256MiB, page-aligned so the kernel reports it back exactly
+	const wantSwapBytes = int64(128 * 1024 * 1024) // on top of wantMemBytes, i.e. --memory-swap = mem+swap
 	const wantCores = 1.5
 
 	run := exec.Command(dockerPath, "run", "--rm",
 		"--memory", strconv.FormatInt(wantMemBytes, 10),
-		"--memory-swap", strconv.FormatInt(wantMemBytes, 10), // pin swap == mem so total isn't silently 2x
+		"--memory-swap", strconv.FormatInt(wantMemBytes+wantSwapBytes, 10),
 		"--cpus", strconv.FormatFloat(wantCores, 'f', -1, 64),
 		"-e", "BOXTOP_CGROUP_DUMP=1",
 		"-v", binPath+":/boxtop-cgroup-dump:ro",
@@ -120,5 +123,18 @@ func TestCgroupDetectionInContainer(t *testing.T) {
 	}
 	if got.CPUSource != wantCPUSource {
 		t.Errorf("cpu_source = %q, want %q", got.CPUSource, wantCPUSource)
+	}
+
+	// Swap accounting can be compiled out of the kernel entirely (e.g.
+	// swapaccount=0 on the boot cmdline, common on some distros), in which
+	// case memory.swap.max simply doesn't exist — that's a host
+	// configuration fact, not a bug in boxtop's reader, so it's a skip
+	// rather than a failure.
+	if !got.HaveSwapMax {
+		t.Log("swap limit not detected — host kernel likely has swap accounting disabled (swapaccount=0); skipping swap assertion")
+		return
+	}
+	if got.SwapMaxBytes != wantSwapBytes {
+		t.Errorf("swap_max_bytes = %d, want %d", got.SwapMaxBytes, wantSwapBytes)
 	}
 }

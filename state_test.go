@@ -438,3 +438,31 @@ func TestKillResultMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestSampleHostCPUPctBaseline exercises the real /proc/stat on this
+// (Linux) test host, same as how sampleCgroupCPUPct is only ever exercised
+// against the real cgroup filesystem rather than a mock — the contract
+// under test is the nil-until-a-second-sample behavior, not the actual
+// percentage, which depends on real system load and isn't asserted on.
+func TestSampleHostCPUPctBaseline(t *testing.T) {
+	s := newMonitorState()
+
+	pct, ok := s.sampleHostCPUPct()
+	if !ok {
+		t.Fatal("sampleHostCPUPct: ok = false reading /proc/stat on a Linux test host")
+	}
+	if pct != nil {
+		t.Errorf("sampleHostCPUPct on first call = %v, want nil (no baseline yet)", *pct)
+	}
+	if !s.hostCPUHasBaseline {
+		t.Error("sampleHostCPUPct did not record a baseline after its first successful read")
+	}
+
+	// A second call against the same (or a slightly advanced) /proc/stat
+	// snapshot should now return a non-nil percentage — totalDelta could in
+	// principle be 0 if called twice within the same jiffy, so this only
+	// documents the shape, not a hard timing guarantee.
+	if _, ok := s.sampleHostCPUPct(); !ok {
+		t.Error("sampleHostCPUPct: ok = false on second call")
+	}
+}

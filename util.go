@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"runtime"
 	"syscall"
 )
@@ -31,3 +32,17 @@ const clkTck = 100.0
 // not a real syscall per call), which is the unit /proc/<pid>/stat field 24
 // counts in.
 var pageSizeKB = syscall.Getpagesize() / 1024
+
+// formatBytesCompact renders a byte count as a short human string — "512M"
+// below 1 GiB, "1.2G" at or above it — for the side-by-side top-bar meters,
+// which don't have room for "1234/4096 MB".
+func formatBytesCompact(b int64) string {
+	const gib = 1024 * 1024 * 1024
+	if b < 0 {
+		b = 0
+	}
+	if b >= gib {
+		return fmt.Sprintf("%.1fG", float64(b)/gib)
+	}
+	return fmt.Sprintf("%dM", b/(1024*1024))
+}

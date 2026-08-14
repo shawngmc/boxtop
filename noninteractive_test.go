@@ -37,8 +37,11 @@ func TestWriteNonInteractiveFramePrintsFullListAndSimplifiedFooter(t *testing.T)
 		}
 	}
 
-	if !strings.Contains(out, "RAM Usage") {
-		t.Error("output missing RAM usage header line")
+	if !strings.Contains(out, "cgroup RAM") {
+		t.Error("output missing cgroup RAM meter line")
+	}
+	if !strings.Contains(out, "system RAM") {
+		t.Error("output missing system RAM meter line")
 	}
 	if !strings.Contains(out, "Processes: 60") {
 		t.Errorf("output missing process-count footer line, got: %q", out)

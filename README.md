@@ -3,6 +3,14 @@
 A tool to measure cgroup-based workspaces (docker, k8s, etc.).
 
 Features:
+- Side-by-side cgroup and system-wide RAM/CPU/Swap meters in the top bar,
+  so a confined workload's own usage and the host it's sharing are both
+  visible at a glance
+- Swap accounting: cgroup swap (`memory.swap.current`/`memory.swap.max` on
+  v2, derived from `memory.memsw.*` on v1) and system-wide swap
+  (`/proc/meminfo`'s `SwapTotal`/`SwapFree`), each with a graceful
+  "unavailable"/"no swap configured" state when swap accounting or swap
+  itself isn't present
 - Mouse support for column sorting and scrolling via wheel
 - Falls back to host constraints if not constrained/in cgroup
 - Colorblind mode via `--colorblind`
@@ -34,9 +42,6 @@ instructions.
   are hardcoded constants rather than read via `sysconf`. Noted inline
   in `util.go` — swap in `x/sys/unix` if exact parity matters for your
   containers.
-- **No swap accounting.** `memory.swap.current`/`memory.swap.max` are
-  tracked separately from `memory.max` in cgroup v2. The RAM bar can look
-  fine while swap is thrashing.
 - **No cache-vs-anon breakdown.** `memory.stat`'s `anon`/`file` split would
   let users tell reclaimable page cache apart from a real leak, instead of
   just disclaiming the ambiguity in the footer line.

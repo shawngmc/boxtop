@@ -40,6 +40,8 @@ type cgroupDump struct {
 	CoresLimit   float64 `json:"cores_limit"`
 	CPUSource    string  `json:"cpu_source"`
 	HaveCPULimit bool    `json:"have_cpu_limit"`
+	SwapMaxBytes int64   `json:"swap_max_bytes"`
+	HaveSwapMax  bool    `json:"have_swap_max"`
 }
 
 // dumpCgroupLimits mirrors the memory-limit read in collectFrame
@@ -50,6 +52,7 @@ func dumpCgroupLimits() {
 		maxBytes, okMax = readCgroupVal("memory.limit_in_bytes")
 	}
 	coresLimit, cpuSource, haveCPULimit := readCgroupCPULimit()
+	swapMaxBytes, haveSwapMax := readCgroupSwapMax()
 
 	json.NewEncoder(os.Stdout).Encode(cgroupDump{
 		MemMaxBytes:  maxBytes,
@@ -57,5 +60,7 @@ func dumpCgroupLimits() {
 		CoresLimit:   coresLimit,
 		CPUSource:    string(cpuSource),
 		HaveCPULimit: haveCPULimit,
+		SwapMaxBytes: swapMaxBytes,
+		HaveSwapMax:  haveSwapMax,
 	})
 }

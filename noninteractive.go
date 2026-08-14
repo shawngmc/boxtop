@@ -95,6 +95,23 @@ func plainBar(length int, frac float64) string {
 	return strings.Repeat("█", filled) + strings.Repeat("░", length-filled)
 }
 
+// writeMeter is drawMeter's plain-text equivalent. Unlike the interactive
+// top bar, which packs cgroup and system side by side to fit a terminal
+// width, plain-text output has no such column constraint — so cgroup and
+// system meters are printed as separate, fully-detailed stacked lines
+// instead of trying to replicate the side-by-side layout in text form.
+func writeMeter(w io.Writer, scope string, m meter) {
+	label := fmt.Sprintf("%s %s", scope, m.label)
+	switch {
+	case !m.have:
+		fmt.Fprintf(w, "%-11s: unavailable (%s)\n", label, m.unavailableText)
+	case m.measuring:
+		fmt.Fprintf(w, "%-11s: measuring...  %s\n", label, m.detail)
+	default:
+		fmt.Fprintf(w, "%-11s: [%s] %s  %s\n", label, plainBar(30, m.frac), m.pctText, m.detail)
+	}
+}
+
 // writeNonInteractiveFrame formats one snapshot as plain text: the same RAM/
 // CPU summary and column header content as drawFrame, but the full process
 // list unconditionally (there's no viewport to scroll) and a simplified
@@ -102,55 +119,14 @@ func plainBar(length int, frac float64) string {
 func writeNonInteractiveFrame(w io.Writer, state *monitorState, data frameData, width int) {
 	fmt.Fprintf(w, "----- %s -----\n", time.Now().Format("2006-01-02 15:04:05"))
 
-	maxBytes := data.maxBytes
-	maxMB := maxBytes / (1024 * 1024)
-	currMB := data.currBytes / (1024 * 1024)
-	availMB := maxMB - currMB
-	var pctFrac float64
-	if maxMB > 0 {
-		pctFrac = float64(currMB) / float64(maxMB)
+	for i := 0; i < 3; i++ {
+		writeMeter(w, "cgroup", data.cgroupMeters[i])
 	}
-
-	limitLabel := "Used/Limit"
-	if data.noLimit {
-		limitLabel = "Used/Host"
+	for i := 0; i < 3; i++ {
+		writeMeter(w, "system", data.systemMeters[i])
 	}
-	fmt.Fprintf(w, "RAM Usage : %d/%d MB (%s), %d MB Free\n", currMB, maxMB, limitLabel, availMB)
-	fmt.Fprintf(w, "  Percent : [%s] %5.1f%%\n", plainBar(30, pctFrac), pctFrac*100)
-
-	var cpuInfoParts []string
-	if data.haveCPUModel {
-		cpuInfoParts = append(cpuInfoParts, data.cpuModel)
-	}
-	switch {
-	case data.haveCPUCur && data.haveCPUMax:
-		cpuInfoParts = append(cpuInfoParts, fmt.Sprintf("%.0f/%.0f MHz (cur/max)", data.cpuCurMHz, data.cpuMaxMHz))
-	case data.haveCPUCur:
-		cpuInfoParts = append(cpuInfoParts, fmt.Sprintf("%.0f MHz (cur)", data.cpuCurMHz))
-	case data.haveCPUMax:
-		cpuInfoParts = append(cpuInfoParts, fmt.Sprintf("%.0f MHz (max)", data.cpuMaxMHz))
-	}
-	cpuInfoSuffix := ""
-	if len(cpuInfoParts) > 0 {
-		cpuInfoSuffix = "  |  " + strings.Join(cpuInfoParts, "  ")
-	}
-
-	if data.haveCPULimit {
-		sourceLabel := map[cpuLimitSource]string{
-			cpuSourceQuota:  "cgroup quota",
-			cpuSourceCPUSet: "cpuset",
-			cpuSourceHost:   "host, no limit set",
-		}[data.cpuSource]
-		fmt.Fprintf(w, "CPU Limit : %.2f cores (%s)%s\n", data.coresLimit, sourceLabel, cpuInfoSuffix)
-		switch {
-		case data.cpuPct == nil:
-			fmt.Fprintln(w, "  Percent : measuring...")
-		default:
-			cpuFrac := *data.cpuPct / 100
-			fmt.Fprintf(w, "  Percent : [%s] %5.1f%%\n", plainBar(30, cpuFrac), *data.cpuPct)
-		}
-	} else {
-		fmt.Fprintf(w, "CPU Limit : unavailable (no cgroup cpu controller found)%s\n", cpuInfoSuffix)
+	if data.cpuInfoLine != "" {
+		fmt.Fprintln(w, data.cpuInfoLine)
 	}
 
 	fmt.Fprintln(w, strings.Repeat("=", width))

@@ -104,6 +104,13 @@ type monitorState struct {
 	cgroupCPUPrevTime      time.Time
 	cgroupCPUHasBaseline   bool
 
+	// hostCPUPrev/hostCPUHasBaseline are sampleHostCPUPct's baseline,
+	// mirroring cgroupCPUPrev*/cgroupCPUHasBaseline above but for the
+	// system-wide meter — no wall-clock time is needed here since the
+	// result is a ratio of two /proc/stat deltas, not a rate.
+	hostCPUPrev        hostCPUSample
+	hostCPUHasBaseline bool
+
 	// Header click targets, recorded by drawFrame each frame so mouse clicks
 	// map to the same columns that were actually rendered (rather than
 	// duplicating the layout math in the event handler).
@@ -494,4 +501,32 @@ func (s *monitorState) sampleCgroupCPUPct(coresLimit float64) *float64 {
 		s.cgroupCPUHasBaseline = true
 	}
 	return pct
+}
+
+// sampleHostCPUPct is sampleCgroupCPUPct's system-wide counterpart: the
+// fraction of total jiffies since the last call that weren't idle. No
+// coresLimit division is needed — /proc/stat's aggregate "cpu " line is
+// already the whole machine's utilization as a single 0-100% figure.
+//
+// Returns ok=false only if /proc/stat couldn't be read at all (meter should
+// show "unavailable"); pct is nil on the first successful call, before a
+// baseline exists (meter should show "measuring...") or on ok=false.
+func (s *monitorState) sampleHostCPUPct() (pct *float64, ok bool) {
+	sample, readOK := readHostCPUSample()
+	if !readOK {
+		return nil, false
+	}
+
+	if s.hostCPUHasBaseline {
+		totalDelta := sample.total - s.hostCPUPrev.total
+		idleDelta := sample.idle - s.hostCPUPrev.idle
+		if totalDelta > 0 {
+			v := (1 - float64(idleDelta)/float64(totalDelta)) * 100
+			pct = &v
+		}
+	}
+
+	s.hostCPUPrev = sample
+	s.hostCPUHasBaseline = true
+	return pct, true
 }
