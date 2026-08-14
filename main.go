@@ -20,13 +20,15 @@ import (
 var version = "dev"
 
 func main() {
-	var colorblind, showVersion bool
+	var colorblind, showVersion, nonInteractive bool
 	var filter string
 	flag.BoolVar(&colorblind, "colorblind", false, "use the colorblind-friendly palette")
 	flag.BoolVar(&colorblind, "c", false, "shorthand for --colorblind")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.StringVar(&filter, "filter", "", "start with an incremental process filter already applied (same as pressing '/', typing, then Enter)")
 	flag.StringVar(&filter, "f", "", "shorthand for --filter")
+	flag.BoolVar(&nonInteractive, "non-interactive", false, "skip the interactive TUI: wait one refresh_interval_seconds tick, then print one snapshot (header, full process list, simplified footer) and exit. Auto-enabled when stdin or stdout isn't a terminal (piped/redirected).")
+	flag.BoolVar(&nonInteractive, "n", false, "shorthand for --non-interactive")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [refresh_interval_seconds] [flags]\n\n", os.Args[0])
@@ -56,7 +58,18 @@ func main() {
 
 	useColorblindPalette(colorblind)
 
-	if err := run(interval, filter); err != nil {
+	// tcell's raw-mode event loop needs a real terminal on both ends: one to
+	// read keys from, one to draw into. Fall back to the plain-timer
+	// non-interactive path if either isn't a tty, even without --non-interactive.
+	if !nonInteractive {
+		nonInteractive = !isTerminal(os.Stdin) || !isTerminal(os.Stdout)
+	}
+
+	runFn := run
+	if nonInteractive {
+		runFn = runNonInteractive
+	}
+	if err := runFn(interval, filter); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}

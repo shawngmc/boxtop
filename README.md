@@ -13,6 +13,10 @@ Features:
 - Process details popup: press `Enter` on a selected row for PPID, state,
   owning user, thread count, nice value, VmSize/VmSwap, and the resolved
   exe path; `Enter`/`Esc`/`q` closes it
+- Non-interactive mode: prints one snapshot (header, full process list,
+  simplified footer) and exits instead of running the TUI — auto-enabled
+  when stdin or stdout isn't a terminal (piped/redirected), or forced with
+  `--non-interactive`/`-n`
 
 
 
@@ -22,10 +26,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, and release
 instructions.
 
 ## TODOs
-- **No raw-mode fallback path.** This should detects a non-interactive
-  stdin (piped/redirected) and fall back to a plain timer with no key
-  handling. This scaffold always runs through tcell's event loop; add an
-  `isatty`-style check up front if you need the non-interactive mode.
 - **`golang.org/x/sys/unix` niceties omitted.** `runtimeNumCPU()` uses
   `runtime.NumCPU()` (host total) rather than
   `unix.SchedGetaffinity` (schedulable cores), and `CLK_TCK`/page size
