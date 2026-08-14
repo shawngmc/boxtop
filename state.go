@@ -52,6 +52,7 @@ type monitorState struct {
 	procCPUPrev map[int]cpuSample // per-pid CPU sampling baseline
 	cmdCache    map[int]string    // per-pid COMMAND string, read once per process lifetime
 	procSeen    map[int]bool      // scratch set of pids seen this tick, cleared+reused each frame
+	readBuf     []byte            // scratch buffer for raw /proc reads, reused across pids and ticks
 
 	cgroupCPUPrevUsageUsec int64
 	cgroupCPUPrevTime      time.Time
@@ -79,6 +80,7 @@ func newMonitorState() *monitorState {
 		procCPUPrev:  make(map[int]cpuSample),
 		cmdCache:     make(map[int]string),
 		procSeen:     make(map[int]bool),
+		readBuf:      make([]byte, 4096), // one page-ish; grows only for rare large cmdlines
 	}
 }
 

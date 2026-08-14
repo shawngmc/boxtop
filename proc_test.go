@@ -18,20 +18,23 @@ func TestParseStatNameCPU(t *testing.T) {
 		raw      string
 		wantName string
 		wantCPU  float64
+		wantRSS  int64
 		wantOK   bool
 	}{
-		{"normal", sampleStatBash, "bash", 18.0, true},
-		{"comm with spaces", "42 (foo bar) S 1 1 1 0 0 0 0 0 0 0 500 100 0 0 0 0 0 0 0 0 0 0", "foo bar", 6.0, true},
-		{"comm with parens", "42 (a (b) c) S 1 1 1 0 0 0 0 0 0 0 100 0 0 0 0 0 0 0 0 0 0 0", "a (b) c", 1.0, true},
-		{"empty comm", "42 () S 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", "?", 0.0, true},
-		{"control char in comm sanitized", "42 (a\tb) S 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", "a b", 0.0, true},
-		{"no parens", "42 bash S 1 2 3", "", 0.0, false},
-		{"too few fields after comm", "42 (bash) S 1 2 3", "bash", 0.0, false},
-		{"non-numeric utime", "42 (bash) S 1 1 1 0 0 0 0 0 0 0 x 300 0 0 0 0 0 0 0 0 0 0", "bash", 0.0, false},
+		// sampleStatBash's rss field (field 24) is 600 pages.
+		{"normal", sampleStatBash, "bash", 18.0, 600 * pageSizeKB, true},
+		{"comm with spaces", "42 (foo bar) S 1 1 1 0 0 0 0 0 0 0 500 100 0 0 0 0 0 0 0 0 0 0", "foo bar", 6.0, 0, true},
+		{"comm with parens", "42 (a (b) c) S 1 1 1 0 0 0 0 0 0 0 100 0 0 0 0 0 0 0 0 0 0 0", "a (b) c", 1.0, 0, true},
+		{"empty comm", "42 () S 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", "?", 0.0, 0, true},
+		{"control char in comm sanitized", "42 (a\tb) S 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", "a b", 0.0, 0, true},
+		{"rss field parsed", "42 (x) S 1 1 1 0 0 0 0 0 0 0 10 20 0 0 0 0 0 0 0 0 700 0", "x", 0.3, 700 * pageSizeKB, true},
+		{"no parens", "42 bash S 1 2 3", "", 0.0, 0, false},
+		{"too few fields after comm", "42 (bash) S 1 2 3", "bash", 0.0, 0, false},
+		{"non-numeric utime", "42 (bash) S 1 1 1 0 0 0 0 0 0 0 x 300 0 0 0 0 0 0 0 0 0 0", "bash", 0.0, 0, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotName, gotCPU, gotOK := parseStatNameCPU(tc.raw)
+			gotName, gotCPU, gotRSS, gotOK := parseStatNameCPU(tc.raw)
 			if gotName != tc.wantName {
 				t.Errorf("name = %q, want %q", gotName, tc.wantName)
 			}
@@ -41,30 +44,8 @@ func TestParseStatNameCPU(t *testing.T) {
 			if gotOK && gotCPU != tc.wantCPU {
 				t.Errorf("cpuSecs = %v, want %v", gotCPU, tc.wantCPU)
 			}
-		})
-	}
-}
-
-func TestParseStatmRSS(t *testing.T) {
-	tests := []struct {
-		name   string
-		raw    string
-		wantKb int64
-		wantOK bool
-	}{
-		{"normal", "600 148 130 10 0 40 0\n", 148 * pageSizeKB, true},
-		{"single field", "600\n", 0, false},
-		{"empty", "", 0, false},
-		{"non-numeric resident", "600 x 130\n", 0, false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			gotKb, gotOK := parseStatmRSS(tc.raw)
-			if gotOK != tc.wantOK {
-				t.Errorf("ok = %v, want %v", gotOK, tc.wantOK)
-			}
-			if gotOK && gotKb != tc.wantKb {
-				t.Errorf("rssKb = %d, want %d", gotKb, tc.wantKb)
+			if gotOK && gotRSS != tc.wantRSS {
+				t.Errorf("rssKb = %d, want %d", gotRSS, tc.wantRSS)
 			}
 		})
 	}
@@ -122,11 +103,8 @@ func TestCmdForUsesCache(t *testing.T) {
 func TestBuildProcessesLive(t *testing.T) {
 	self := os.Getpid()
 
-	if name, _, ok := readStatNameCPU(self); !ok || name == "" {
-		t.Fatalf("readStatNameCPU(self) = (%q, _, %v), want a name and ok", name, ok)
-	}
-	if rss, ok := readStatmRSS(self); !ok || rss <= 0 {
-		t.Fatalf("readStatmRSS(self) = (%d, %v), want positive rss and ok", rss, ok)
+	if name, _, rss, ok := readStatNameCPU(self); !ok || name == "" || rss <= 0 {
+		t.Fatalf("readStatNameCPU(self) = (%q, _, %d, %v), want a name, positive rss, and ok", name, rss, ok)
 	}
 
 	state := newMonitorState()

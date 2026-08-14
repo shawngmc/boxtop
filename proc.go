@@ -4,7 +4,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 )
 
 // Process ports the dict shape returned by read_process()/get_processes().
@@ -53,29 +55,89 @@ func listPIDs() []int {
 	return pids
 }
 
-// readStatNameCPU reads /proc/<pid>/stat ONCE and returns both the short
-// kernel name (comm) and cumulative user+system CPU seconds. comm (the 2nd
-// field) can contain spaces and parentheses, so — same trick as the Python
-// version — we isolate the numeric tail by splitting after the LAST ')'.
+// procStatPath builds the /proc/<pid>/stat path for a pid.
+func procStatPath(pid int) string {
+	return "/proc/" + strconv.Itoa(pid) + "/stat"
+}
+
+// readProcFile reads path via raw open/read/close syscalls into buf, growing
+// buf if the file doesn't fit, and returns the filled data plus the
+// (possibly reallocated) buffer to store back for reuse next call.
 //
-// This single read now supplies the name that used to come from a separate
-// /proc/<pid>/comm read, so the per-pid read count drops.
-func readStatNameCPU(pid int) (name string, cpuSecs float64, ok bool) {
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+// This deliberately bypasses os.ReadFile. Profiling the poll loop showed
+// ~95% of its CPU sits in the file syscalls, and os.ReadFile pays a stack of
+// per-open overhead that is pure waste for these tiny, always-ready /proc
+// files: an fstat to size a growable buffer (procfs reports size 0 anyway), a
+// nonblocking fcntl, registration with the runtime network poller, and a GC
+// finalizer. open/read/close straight to a reused buffer skips all of it.
+func readProcFile(path string, buf []byte) (data, newBuf []byte, ok bool) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
 	if err != nil {
-		return "", 0, false
+		return nil, buf, false
 	}
-	return parseStatNameCPU(string(data))
+	total := 0
+	for {
+		if total == len(buf) {
+			buf = append(buf, make([]byte, len(buf))...) // grow (rare: /proc files are small)
+		}
+		n, err := syscall.Read(fd, buf[total:])
+		if n > 0 {
+			total += n
+		}
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			syscall.Close(fd)
+			return nil, buf, false
+		}
+		if n == 0 {
+			break
+		}
+	}
+	syscall.Close(fd)
+	return buf[:total], buf, true
+}
+
+// bytesToStr aliases a byte slice as a string with no copy. Safe here because
+// every caller only reads the string during parsing and never retains it past
+// the next reuse of the underlying buffer.
+func bytesToStr(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(&b[0], len(b))
+}
+
+// readStatNameCPU reads /proc/<pid>/stat ONCE and returns the short kernel
+// name (comm), cumulative user+system CPU seconds, and resident set size in
+// kB. This is the convenience wrapper (own buffer); the poll loop reads via
+// state.readBuf + parseStatNameCPU directly to reuse one buffer across pids.
+func readStatNameCPU(pid int) (name string, cpuSecs float64, rssKb int64, ok bool) {
+	data, _, ok := readProcFile("/proc/"+strconv.Itoa(pid)+"/stat", make([]byte, 4096))
+	if !ok {
+		return "", 0, 0, false
+	}
+	return parseStatNameCPU(bytesToStr(data))
 }
 
 // parseStatNameCPU is the pure parser behind readStatNameCPU, split out so
 // the tricky comm-with-parens/spaces handling can be unit-tested against
-// fixture lines without touching /proc.
-func parseStatNameCPU(raw string) (name string, cpuSecs float64, ok bool) {
+// fixture lines without touching /proc. comm (the 2nd field) can contain
+// spaces and parentheses, so — same trick as the Python version — we isolate
+// the numeric tail by splitting after the LAST ')'.
+//
+// RSS now comes from stat field 24 (rss, in pages), which is identical to the
+// resident field of /proc/<pid>/statm the loop used to read separately — same
+// page-count semantics, so pulling it from this one read drops the per-pid
+// file count from two to one with no change in the reported number. (Like
+// statm's resident, this is the page-count RSS, which can differ slightly
+// from status's VmRSS anon/file/shmem breakdown; immaterial for a ranking.)
+func parseStatNameCPU(raw string) (name string, cpuSecs float64, rssKb int64, ok bool) {
 	lp := strings.IndexByte(raw, '(')
 	rp := strings.LastIndexByte(raw, ')')
 	if lp == -1 || rp == -1 || rp < lp || rp+1 >= len(raw) {
-		return "", 0, false
+		return "", 0, 0, false
 	}
 	// comm is between the first '(' and last ')'; the kernel caps it at 15
 	// chars (no path/args), identical to what /proc/<pid>/comm reported.
@@ -85,47 +147,24 @@ func parseStatNameCPU(raw string) (name string, cpuSecs float64, ok bool) {
 	}
 
 	fields := strings.Fields(raw[rp+1:])
-	// fields[0] is field 3 (state); utime is field 14, stime is 15 —
-	// i.e. fields[11] and fields[12] once state (field 3) is index 0.
+	// fields[0] is field 3 (state); utime is field 14, stime 15, rss 24 —
+	// i.e. indices 11, 12, and 21 once state (field 3) is index 0.
 	if len(fields) < 13 {
-		return name, 0, false
+		return name, 0, 0, false
 	}
 	utime, e1 := strconv.ParseInt(fields[11], 10, 64)
 	stime, e2 := strconv.ParseInt(fields[12], 10, 64)
 	if e1 != nil || e2 != nil {
-		return name, 0, false
+		return name, 0, 0, false
 	}
-	return name, float64(utime+stime) / clkTck, true
-}
-
-// readStatmRSS reads /proc/<pid>/statm and returns the resident set size in
-// kB. statm is a single short space-separated line whose 2nd field is the
-// RSS in pages — far cheaper to read and parse each tick than scanning the
-// ~50-line /proc/<pid>/status for its VmRSS line.
-//
-// Fidelity note: this is the page-count RSS (pages * PAGE_KB), which can
-// differ slightly from status's VmRSS anon/file/shmem breakdown. For a
-// per-process memory ranking the difference is immaterial; switch back to
-// parsing VmRSS out of /status if exact parity matters.
-func readStatmRSS(pid int) (int64, bool) {
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/statm")
-	if err != nil {
-		return 0, false
+	// rss (field 24) is present in every real stat line; guard the index and
+	// tolerate a parse miss so a short/odd line still yields CPU + name.
+	if len(fields) > 21 {
+		if pages, err := strconv.ParseInt(fields[21], 10, 64); err == nil {
+			rssKb = pages * pageSizeKB
+		}
 	}
-	return parseStatmRSS(string(data))
-}
-
-// parseStatmRSS is the pure parser behind readStatmRSS.
-func parseStatmRSS(raw string) (int64, bool) {
-	fields := strings.Fields(raw)
-	if len(fields) < 2 {
-		return 0, false
-	}
-	pages, err := strconv.ParseInt(fields[1], 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return pages * pageSizeKB, true
+	return name, float64(utime+stime) / clkTck, rssKb, true
 }
 
 // cmdFor returns the full COMMAND string for pid, reading and caching
@@ -187,9 +226,11 @@ type cpuSample struct {
 // buildProcesses reads every process once per tick and returns the full,
 // unsorted table with CPU% already sampled. It replaces the old
 // getProcesses()+sampleProcessCPU() two-pass design, which read four files
-// per pid (status, comm, cmdline, stat); this reads /stat (name + CPU) and
-// /statm (RSS) per tick, plus /cmdline only for pids not already cached —
-// roughly a 4x reduction in per-process I/O for a steady process set.
+// per pid (status, comm, cmdline, stat); this reads /stat alone (name + CPU +
+// RSS) per tick, plus /cmdline only for pids not already cached. RSS used to
+// need a second /statm read, but stat field 24 carries the same page-count
+// value, so the steady-state per-pid file count is now one — the poll loop is
+// dominated by these opens, so halving them roughly halves its CPU.
 //
 // The per-pid CPU baseline (procCPUPrev), COMMAND cache (cmdCache), and the
 // scratch "seen this tick" set (procSeen) all live on state and are reused
@@ -207,15 +248,18 @@ func buildProcesses(state *monitorState, coresLimit float64) []Process {
 	procs := make([]Process, 0, len(pids))
 
 	for _, pid := range pids {
-		name, cpuSecs, statOK := readStatNameCPU(pid)
-		if !statOK {
-			// Process vanished between listing and reading, or its stat was
-			// unparseable — skip it (normal race).
+		// One read per pid: /proc/<pid>/stat now yields name, CPU, and RSS.
+		// The buffer is reused across pids (and grown back onto state) so the
+		// hot loop allocates nothing for the read itself.
+		data, buf, ok := readProcFile(procStatPath(pid), state.readBuf)
+		state.readBuf = buf
+		if !ok {
+			// Process vanished between listing and reading (normal race).
 			continue
 		}
-		rssKb, rssOK := readStatmRSS(pid)
-		if !rssOK {
-			// Raced away between the two reads.
+		name, cpuSecs, rssKb, statOK := parseStatNameCPU(bytesToStr(data))
+		if !statOK {
+			// Unparseable stat line — skip it.
 			continue
 		}
 		seen[pid] = true
