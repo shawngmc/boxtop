@@ -29,6 +29,23 @@ isn't debuggable — fine for distribution, not for local hacking.
 go test ./...
 ```
 
+### CI
+
+The [CI workflow](.github/workflows/ci.yml) runs `gofmt -l`, `go vet`,
+`go build`, and `go test ./...` on every push and pull request to `main`.
+
+### Pre-commit hook
+
+A local hook mirroring CI is available at `.githooks/pre-commit`. Install it
+once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+It checks `gofmt` on staged `.go` files, then runs `go vet`, `go build`, and
+`go test ./...`, blocking the commit if any of them fail.
+
 ### Container integration test
 
 `integration/cgroup_container_test.go` (plus its worker half,

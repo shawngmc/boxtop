@@ -53,12 +53,6 @@ instructions.
   reads `/sys/fs/cgroup/...` for wherever boxtop itself is running. A
   `--cgroup <name-or-path>` flag would let boxtop run on the host and
   watch a specific container without `docker exec`-ing into it.
-- **CI only runs on tag push or manual dispatch.** `.github/workflows/
-  release.yml` runs tests before a release build, but nothing runs
-  `go test`/`go vet`/`gofmt -l` on every push or PR to `main`, so a broken
-  commit can sit on `main` unnoticed until a release is cut. A separate
-  `ci.yml` on `push`/`pull_request` (plus maybe `golangci-lint`) would
-  close that gap.
 - **Kernel thread cmdline reads are wasted.** `cmdFor` in `proc.go` does a
   full `open`/`read`/`close` of `/proc/<pid>/cmdline` on every cache miss,
   which always comes back empty for kernel threads. The `flags` field
