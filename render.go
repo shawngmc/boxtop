@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -63,6 +64,13 @@ type frameData struct {
 	totalRSSKb          int64
 	oomKills            int64
 	haveOOMData         bool
+
+	cpuModel     string
+	haveCPUModel bool
+	cpuCurMHz    float64
+	cpuMaxMHz    float64
+	haveCPUCur   bool
+	haveCPUMax   bool
 }
 
 // collectFrame ports the per-tick data gathering: cgroup memory/CPU limits,
@@ -101,6 +109,9 @@ func collectFrame(state *monitorState) (frameData, error) {
 
 	oomKills, haveOOMData := readCgroupOOMKills()
 
+	cpuModel, haveCPUModel := readCPUModel()
+	cpuCurMHz, cpuMaxMHz, haveCPUCur, haveCPUMax := readCPUFreqMHz()
+
 	procs := buildProcesses(state, coresLimit)
 	// A fresh poll yields a brand-new unsorted slice, so the next drawFrame
 	// must sort it regardless of whether the sort column changed.
@@ -122,6 +133,13 @@ func collectFrame(state *monitorState) (frameData, error) {
 		totalRSSKb:   totalRSSKb,
 		oomKills:     oomKills,
 		haveOOMData:  haveOOMData,
+
+		cpuModel:     cpuModel,
+		haveCPUModel: haveCPUModel,
+		cpuCurMHz:    cpuCurMHz,
+		cpuMaxMHz:    cpuMaxMHz,
+		haveCPUCur:   haveCPUCur,
+		haveCPUMax:   haveCPUMax,
 	}, nil
 }
 
@@ -160,16 +178,42 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 	// version's fixed DIVIDER_COL padding.
 	dividerCol := w / 2
 	coresLimit := data.coresLimit
+
+	// CPU make/model plus current/max clockspeed, appended to the CPU Limit
+	// line. Any piece can be missing independently (a VM without a cpufreq
+	// driver has speeds but a generic model string, a masked /proc/cpuinfo
+	// in some containers has neither), so each part is assembled only if its
+	// data was actually read. The combined line is left unclipped — tcell's
+	// SetContent silently drops cells past the screen edge — so it just
+	// truncates naturally in a narrow terminal instead of needing its own
+	// width accounting.
+	var cpuInfoParts []string
+	if data.haveCPUModel {
+		cpuInfoParts = append(cpuInfoParts, data.cpuModel)
+	}
+	switch {
+	case data.haveCPUCur && data.haveCPUMax:
+		cpuInfoParts = append(cpuInfoParts, fmt.Sprintf("%.0f/%.0f MHz (cur/max)", data.cpuCurMHz, data.cpuMaxMHz))
+	case data.haveCPUCur:
+		cpuInfoParts = append(cpuInfoParts, fmt.Sprintf("%.0f MHz (cur)", data.cpuCurMHz))
+	case data.haveCPUMax:
+		cpuInfoParts = append(cpuInfoParts, fmt.Sprintf("%.0f MHz (max)", data.cpuMaxMHz))
+	}
+	cpuInfoSuffix := ""
+	if len(cpuInfoParts) > 0 {
+		cpuInfoSuffix = "  |  " + strings.Join(cpuInfoParts, "  ")
+	}
+
 	if data.haveCPULimit {
 		sourceLabel := map[cpuLimitSource]string{
 			cpuSourceQuota:  "cgroup quota",
 			cpuSourceCPUSet: "cpuset",
 			cpuSourceHost:   "host, no limit set",
 		}[data.cpuSource]
-		cpuLimitText := fmt.Sprintf("CPU Limit : %.2f cores (%s)", coresLimit, sourceLabel)
+		cpuLimitText := fmt.Sprintf("CPU Limit : %.2f cores (%s)%s", coresLimit, sourceLabel, cpuInfoSuffix)
 		drawText(screen, dividerCol, y, cpuLimitText, tcell.StyleDefault)
 	} else {
-		drawText(screen, dividerCol, y, "CPU Limit : unavailable (no cgroup cpu controller found)", tcell.StyleDefault)
+		drawText(screen, dividerCol, y, "CPU Limit : unavailable (no cgroup cpu controller found)"+cpuInfoSuffix, tcell.StyleDefault)
 	}
 	y++
 

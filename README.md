@@ -29,7 +29,6 @@ instructions.
   are hardcoded constants rather than read via `sysconf`. Noted inline
   in `util.go` — swap in `x/sys/unix` if exact parity matters for your
   containers.
-- **Show CPU Make/Model and Clockspeed**
 - **No swap accounting.** `memory.swap.current`/`memory.swap.max` are
   tracked separately from `memory.max` in cgroup v2. The RAM bar can look
   fine while swap is thrashing.
