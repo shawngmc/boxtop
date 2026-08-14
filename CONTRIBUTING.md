@@ -12,6 +12,17 @@ go build -o boxtop .
 ./boxtop 1    # 1-second refresh
 ```
 
+This plain build keeps the symbol table and debug info, which is what you
+want for development. For a release-style binary that's roughly a third
+smaller, strip those out (this is what the release workflow does):
+
+```sh
+go build -trimpath -ldflags="-s -w" -o boxtop .
+```
+
+`-s` drops the symbol table and `-w` drops DWARF debug info, so the result
+isn't debuggable — fine for distribution, not for local hacking.
+
 ## Testing
 
 ```sh
