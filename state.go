@@ -43,6 +43,12 @@ type monitorState struct {
 	scrollOffset int
 	lastPageSize int
 
+	// sortDirty is set whenever the sort order becomes stale — a fresh poll
+	// produced a new unsorted process slice, or the sort column/direction
+	// changed. drawFrame re-sorts only when it's set, so scroll/page/home/end
+	// redraws (which don't change order) skip the O(n log n) sort entirely.
+	sortDirty bool
+
 	procCPUPrev map[int]cpuSample // per-pid CPU sampling baseline
 	cmdCache    map[int]string    // per-pid COMMAND string, read once per process lifetime
 	procSeen    map[int]bool      // scratch set of pids seen this tick, cleared+reused each frame
@@ -104,6 +110,7 @@ func (s *monitorState) handleRuneKey(r rune) {
 		return
 	case 'r':
 		s.sortReverse = !s.sortReverse
+		s.sortDirty = true
 		return
 	}
 
@@ -121,6 +128,7 @@ func (s *monitorState) setSortColumn(col sortColumn) {
 		s.sortCol = col
 		s.sortReverse = sortDefaultReverse[col]
 	}
+	s.sortDirty = true
 }
 
 // scrollBy moves the scroll offset by delta rows, clamping at the top; the

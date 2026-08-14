@@ -98,6 +98,9 @@ func collectFrame(state *monitorState) (frameData, error) {
 	}
 
 	procs := buildProcesses(state, coresLimit)
+	// A fresh poll yields a brand-new unsorted slice, so the next drawFrame
+	// must sort it regardless of whether the sort column changed.
+	state.sortDirty = true
 	var totalRSSKb int64
 	for _, p := range procs {
 		totalRSSKb += p.RSSKb
@@ -222,7 +225,12 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 	maxProcRows := max(3, h-tableTop-footerRows)
 
 	procs := data.procs
-	state.sortProcesses(procs)
+	// Sort only when the order is stale (new poll, or sort column/direction
+	// changed). A pure scroll redraw reuses the already-sorted cached slice.
+	if state.sortDirty {
+		state.sortProcesses(procs)
+		state.sortDirty = false
+	}
 	totalRSSKb := data.totalRSSKb
 
 	total := len(procs)
