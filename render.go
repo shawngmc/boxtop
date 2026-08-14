@@ -192,6 +192,16 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 	drawText(screen, 0, y, repeatRune('=', w), tcell.StyleDefault)
 	y++
 
+	// --- incremental filter input (only while '/' has been used) ---
+	if state.filterMode || state.filterQuery != "" {
+		filterLine := " Filter: " + state.filterQuery
+		if state.filterMode {
+			filterLine += "█"
+		}
+		drawText(screen, 0, y, truncateVisible(filterLine, w), tcell.StyleDefault.Bold(true))
+		y++
+	}
+
 	// --- process table ---
 	fixedWidth := 1 + pidWidth + 2 + nameWidth + 2 + cpuWidth + 2 + rssWidth + 2
 	cmdWidth := max(15, w-fixedWidth)
@@ -229,6 +239,11 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 	tableTop := y
 	footerRows := 3 // footer rule + summary line + key-help line
 	maxProcRows := max(3, h-tableTop-footerRows)
+	// footerY pins the footer to the bottom of the terminal regardless of how
+	// many process rows actually got drawn — otherwise a short (or filtered
+	// down) list leaves the footer floating right under the last row instead
+	// of anchored at the screen edge.
+	footerY := tableTop + maxProcRows
 
 	procs := data.procs
 	// Sort only when the order is stale (new poll, or sort column/direction
@@ -237,7 +252,18 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		state.sortProcesses(procs)
 		state.sortDirty = false
 	}
+
+	// Filtering runs after sorting (cheap: it's just a subset pass) so the
+	// retained processes keep the sorted order, needing no re-sort of its own.
 	totalRSSKb := data.totalRSSKb
+	if state.filterQuery != "" {
+		procs = filterProcesses(procs, state.filterQuery)
+		var filteredRSSKb int64
+		for _, p := range procs {
+			filteredRSSKb += p.RSSKb
+		}
+		totalRSSKb = filteredRSSKb
+	}
 
 	total := len(procs)
 	truncated := total > maxProcRows
@@ -295,6 +321,10 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		y++
 	}
 
+	// Jump to the fixed footer position — when truncated this is already
+	// where y landed, but a short/filtered list stops well short of it.
+	y = footerY
+
 	drawText(screen, 0, y, rule, tcell.StyleDefault)
 	y++
 	procX := drawText(screen, 0, y, fmt.Sprintf(" Processes: %-5d  Sum of RSS: %.1f MB  (cgroup usage may include cache/shared mem not in RSS)",
@@ -314,7 +344,13 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		drawText(screen, procX, y, fmt.Sprintf("  OOM Kills: %d", data.oomKills), oomStyle)
 	}
 	y++
-	drawText(screen, 0, y, " Ctrl+C/q exit | Sort: [m]em [c]pu [p]id [n]ame  [r]everse | Scroll: ↑↓/j/k PgUp/PgDn Home/End | Mouse: wheel scroll, click header to sort", tcell.StyleDefault)
+	helpLine := " Ctrl+C/q exit | Sort: [m]em [c]pu [p]id [n]ame  [r]everse | Scroll: ↑↓/j/k PgUp/PgDn Home/End | Mouse: wheel scroll, click header to sort"
+	if state.filterMode {
+		helpLine = " Filter: type to search, Enter to apply, Esc to clear | Ctrl+C exit"
+	} else {
+		helpLine += " | Filter: [/]"
+	}
+	drawText(screen, 0, y, helpLine, tcell.StyleDefault)
 }
 
 func repeatRune(r rune, n int) string {

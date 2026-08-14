@@ -20,9 +20,12 @@ var version = "dev"
 
 func main() {
 	var colorblind, showVersion bool
+	var filter string
 	flag.BoolVar(&colorblind, "colorblind", false, "use the colorblind-friendly palette")
 	flag.BoolVar(&colorblind, "c", false, "shorthand for --colorblind")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.StringVar(&filter, "filter", "", "start with an incremental process filter already applied (same as pressing '/', typing, then Enter)")
+	flag.StringVar(&filter, "f", "", "shorthand for --filter")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [refresh_interval_seconds] [flags]\n\n", os.Args[0])
@@ -52,13 +55,13 @@ func main() {
 
 	useColorblindPalette(colorblind)
 
-	if err := run(interval); err != nil {
+	if err := run(interval, filter); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 }
 
-func run(interval time.Duration) error {
+func run(interval time.Duration, initialFilter string) error {
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		return err
@@ -78,6 +81,7 @@ func run(interval time.Duration) error {
 	screen.EnableMouse(tcell.MouseButtonEvents)
 
 	state := newMonitorState()
+	state.filterQuery = initialFilter
 
 	events := make(chan tcell.Event, 8)
 	quit := make(chan struct{})
@@ -141,6 +145,9 @@ func run(interval time.Duration) error {
 func handleEvent(screen tcell.Screen, state *monitorState, ev tcell.Event) (redraw, quit bool) {
 	switch e := ev.(type) {
 	case *tcell.EventKey:
+		if state.filterMode {
+			return handleFilterKey(state, e)
+		}
 		switch e.Key() {
 		case tcell.KeyCtrlC, tcell.KeyEscape:
 			return false, true
@@ -160,6 +167,10 @@ func handleEvent(screen tcell.Screen, state *monitorState, ev tcell.Event) (redr
 			r := e.Rune()
 			if r == 'q' || r == 'Q' {
 				return false, true
+			}
+			if r == '/' {
+				state.filterMode = true
+				return true, false
 			}
 			state.handleRuneKey(r)
 		default:
@@ -197,3 +208,30 @@ func handleEvent(screen tcell.Screen, state *monitorState, ev tcell.Event) (redr
 
 // mouseWheelStep is how many rows one wheel notch scrolls.
 const mouseWheelStep = 3
+
+// handleFilterKey applies a single keypress while the incremental filter
+// input (opened via '/') has focus. Typed runes narrow the process list
+// live; Backspace edits the query; Enter leaves the input focused elsewhere
+// while keeping the filter applied; Esc clears the filter and closes the
+// input — the same split htop uses for its F4 filter bar. Ctrl+C still
+// force-quits so a stuck filter session isn't a trap.
+func handleFilterKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool) {
+	switch e.Key() {
+	case tcell.KeyCtrlC:
+		return false, true
+	case tcell.KeyEnter:
+		state.filterMode = false
+		return true, false
+	case tcell.KeyEscape:
+		state.filterMode = false
+		state.clearFilter()
+		return true, false
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		state.filterBackspace()
+		return true, false
+	case tcell.KeyRune:
+		state.appendFilterRune(e.Rune())
+		return true, false
+	}
+	return false, false
+}

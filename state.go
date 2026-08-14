@@ -54,6 +54,13 @@ type monitorState struct {
 	procSeen    map[int]bool      // scratch set of pids seen this tick, cleared+reused each frame
 	readBuf     []byte            // scratch buffer for raw /proc reads, reused across pids and ticks
 
+	// filterMode is true while the incremental filter's text input has
+	// focus (opened via '/', ported from htop's F4 filter bar). filterQuery
+	// persists after the input is closed (Enter) so re-opening it resumes
+	// editing the same text, and is cleared on Esc.
+	filterMode  bool
+	filterQuery string
+
 	cgroupCPUPrevUsageUsec int64
 	cgroupCPUPrevTime      time.Time
 	cgroupCPUHasBaseline   bool
@@ -145,6 +152,45 @@ func (s *monitorState) scrollBy(delta int) {
 	if s.scrollOffset < 0 {
 		s.scrollOffset = 0
 	}
+}
+
+// appendFilterRune adds a typed character to the incremental filter and, as
+// with a sort-column change, jumps back to the top — the old scrollOffset is
+// a row index into a match set that just changed.
+func (s *monitorState) appendFilterRune(r rune) {
+	s.filterQuery += string(r)
+	s.scrollOffset = 0
+}
+
+// filterBackspace removes the last rune of the filter query, if any.
+func (s *monitorState) filterBackspace() {
+	if s.filterQuery == "" {
+		return
+	}
+	runes := []rune(s.filterQuery)
+	s.filterQuery = string(runes[:len(runes)-1])
+	s.scrollOffset = 0
+}
+
+// clearFilter empties the filter query, ported from htop's Esc-clears-F4
+// behavior.
+func (s *monitorState) clearFilter() {
+	s.filterQuery = ""
+	s.scrollOffset = 0
+}
+
+// filterProcesses returns the subset of procs whose name or command
+// contains query, case-insensitively — ports htop's F4 incremental filter.
+// Order is preserved, so filtering an already-sorted slice needs no re-sort.
+func filterProcesses(procs []Process, query string) []Process {
+	q := strings.ToLower(query)
+	out := make([]Process, 0, len(procs))
+	for _, p := range procs {
+		if strings.Contains(p.NameLower, q) || strings.Contains(strings.ToLower(p.Cmd), q) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // sortColumnAt maps a click position to a header sort column, if the click

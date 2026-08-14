@@ -58,6 +58,84 @@ func TestSortDirtyFlag(t *testing.T) {
 
 func pctPtr(v float64) *float64 { return &v }
 
+func TestFilterQueryEditing(t *testing.T) {
+	s := newMonitorState()
+	s.scrollOffset = 25
+
+	s.appendFilterRune('c')
+	s.appendFilterRune('h')
+	if s.filterQuery != "ch" {
+		t.Errorf("filterQuery = %q, want %q", s.filterQuery, "ch")
+	}
+	if s.scrollOffset != 0 {
+		t.Errorf("appendFilterRune left scrollOffset = %d, want 0", s.scrollOffset)
+	}
+
+	s.scrollOffset = 25
+	s.filterBackspace()
+	if s.filterQuery != "c" {
+		t.Errorf("filterQuery after backspace = %q, want %q", s.filterQuery, "c")
+	}
+	if s.scrollOffset != 0 {
+		t.Errorf("filterBackspace left scrollOffset = %d, want 0", s.scrollOffset)
+	}
+
+	// Backspace on an empty query is a no-op, not a panic.
+	s.filterQuery = ""
+	s.filterBackspace()
+	if s.filterQuery != "" {
+		t.Errorf("filterBackspace on empty query = %q, want empty", s.filterQuery)
+	}
+
+	s.filterQuery = "abc"
+	s.scrollOffset = 25
+	s.clearFilter()
+	if s.filterQuery != "" {
+		t.Errorf("clearFilter left filterQuery = %q, want empty", s.filterQuery)
+	}
+	if s.scrollOffset != 0 {
+		t.Errorf("clearFilter left scrollOffset = %d, want 0", s.scrollOffset)
+	}
+}
+
+func TestFilterProcesses(t *testing.T) {
+	procs := []Process{
+		{PID: 1, Name: "chrome", NameLower: "chrome", Cmd: "/usr/bin/chrome --flag"},
+		{PID: 2, Name: "bash", NameLower: "bash", Cmd: "/bin/bash"},
+		{PID: 3, Name: "sh", NameLower: "sh", Cmd: "/bin/sh -c chrome-helper"},
+	}
+
+	tests := []struct {
+		name     string
+		query    string
+		wantPIDs []int
+	}{
+		{"matches by name, case-insensitive", "CHROME", []int{1, 3}}, // pid 3's cmd also contains "chrome"
+		{"matches by command substring", "chrome-helper", []int{3}},
+		{"matches multiple", "sh", []int{2, 3}}, // "bash" and "sh" both contain "sh"
+		{"no match", "zzz", nil},
+		{"empty query matches everything", "", []int{1, 2, 3}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := filterProcesses(procs, tc.query)
+			gotPIDs := make([]int, len(got))
+			for i, p := range got {
+				gotPIDs[i] = p.PID
+			}
+			if len(gotPIDs) != len(tc.wantPIDs) {
+				t.Fatalf("filterProcesses(%q) = %v, want %v", tc.query, gotPIDs, tc.wantPIDs)
+			}
+			for i := range tc.wantPIDs {
+				if gotPIDs[i] != tc.wantPIDs[i] {
+					t.Errorf("filterProcesses(%q) = %v, want %v", tc.query, gotPIDs, tc.wantPIDs)
+					break
+				}
+			}
+		})
+	}
+}
+
 func TestSortProcesses(t *testing.T) {
 	// Fresh list rebuilt per case since sortProcesses reorders in place.
 	newList := func() []Process {

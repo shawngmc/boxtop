@@ -8,6 +8,8 @@ Features:
 - Colorblind mode via `--colorblind`
 - Surfaces the cgroup's OOM-kill count, when available, so a kernel-reaped
   process shows up even after the RAM bar drops back under 100%
+- Incremental name/command filter: press `/` to type, `Enter` to apply,
+  `Esc` to clear — or start pre-filtered with `--filter`/`-f`
 
 
 
@@ -37,8 +39,6 @@ instructions.
 - **No help/keybinding screen.** All keys are packed into one footer line
   in `render.go`; a `h`/`?` overlay would scale better as more keys are
   added.
-- **No filter/search.** An htop-`F4`-style incremental name filter would
-  help once process counts grow.
 - **No kill action.** Pressing a key (e.g. `k`) to send a signal to the
   selected process, gated behind a confirm step, is standard for this
   class of tool and not yet implemented.
@@ -60,7 +60,6 @@ instructions.
   commit can sit on `main` unnoticed until a release is cut. A separate
   `ci.yml` on `push`/`pull_request` (plus maybe `golangci-lint`) would
   close that gap.
-- **No Dependabot config** for the tcell/x-sys dependency tree.
 - **Kernel thread cmdline reads are wasted.** `cmdFor` in `proc.go` does a
   full `open`/`read`/`close` of `/proc/<pid>/cmdline` on every cache miss,
   which always comes back empty for kernel threads. The `flags` field
