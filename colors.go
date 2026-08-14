@@ -38,6 +38,59 @@ var processStops = []colorStop{
 // the whole cgroup).
 var processCPUStops = summaryStops
 
+// Colorblind-safe replacements for the stops above. Red and green are the
+// pair confused by the two most common forms of color blindness
+// (deuteranopia/protanopia), so the default green-yellow-red gradient can
+// collapse to a single muddy hue for those users right where the gradient
+// is meant to be most informative. Swapping green for blue keeps the same
+// three-stop shape (and the same yellow midpoint) while using two endpoint
+// colors — blue and vermillion — that stay distinguishable under all
+// common forms of color blindness. Values are from the Okabe-Ito palette
+// (https://jfly.uni-koeln.de/color/), which was designed and vetted for
+// exactly this.
+var (
+	cbBlue      = [3]int32{0, 114, 178}
+	cbYellow    = [3]int32{240, 228, 66}
+	cbVermilion = [3]int32{213, 94, 0}
+)
+
+var summaryStopsColorblind = []colorStop{
+	{0.0, cbBlue[0], cbBlue[1], cbBlue[2]},
+	{0.5, cbYellow[0], cbYellow[1], cbYellow[2]},
+	{1.0, cbVermilion[0], cbVermilion[1], cbVermilion[2]},
+}
+
+var processStopsColorblind = []colorStop{
+	{0.0, cbBlue[0], cbBlue[1], cbBlue[2]},
+	{0.10, cbYellow[0], cbYellow[1], cbYellow[2]},
+	{0.50, cbVermilion[0], cbVermilion[1], cbVermilion[2]},
+}
+
+var processCPUStopsColorblind = summaryStopsColorblind
+
+// useColorblindPalette swaps the package's active gradients to the
+// colorblind-safe set (or back to the default set), for the --colorblind
+// flag in main.go. Called once at startup, before the first draw.
+func useColorblindPalette(on bool) {
+	if on {
+		summaryStops = summaryStopsColorblind
+		processStops = processStopsColorblind
+		processCPUStops = processCPUStopsColorblind
+	} else {
+		summaryStops = []colorStop{
+			{0.0, green[0], green[1], green[2]},
+			{0.5, 255, 255, 0},
+			{1.0, red[0], red[1], red[2]},
+		}
+		processStops = []colorStop{
+			{0.0, green[0], green[1], green[2]},
+			{0.10, 255, 255, 0},
+			{0.50, red[0], red[1], red[2]},
+		}
+		processCPUStops = summaryStops
+	}
+}
+
 // interpolateStops ports gradient_color(): maps frac in [0, 1] to an RGB
 // triple by linearly interpolating through stops (sorted ascending by
 // position). frac is clamped to the stops' own range, same as the Python

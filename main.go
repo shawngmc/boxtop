@@ -16,10 +16,24 @@ import (
 
 func main() {
 	interval := time.Second
-	if len(os.Args) > 1 {
-		secs, err := strconv.ParseFloat(os.Args[1], 64)
+	colorblind := false
+	var intervalArg string
+
+	// Hand-rolled rather than the flag package: there's only one boolean
+	// switch and one positional arg so far. Worth revisiting with `flag`
+	// (for free -h/--help) once more options land here.
+	for _, arg := range os.Args[1:] {
+		if arg == "--colorblind" || arg == "-c" {
+			colorblind = true
+			continue
+		}
+		intervalArg = arg
+	}
+
+	if intervalArg != "" {
+		secs, err := strconv.ParseFloat(intervalArg, 64)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Usage: %s [refresh_interval_seconds]\n", os.Args[0])
+			fmt.Fprintf(os.Stderr, "Usage: %s [refresh_interval_seconds] [--colorblind]\n", os.Args[0])
 			os.Exit(1)
 		}
 		interval = time.Duration(secs * float64(time.Second))
@@ -27,6 +41,8 @@ func main() {
 	if interval <= 0 {
 		interval = time.Second
 	}
+
+	useColorblindPalette(colorblind)
 
 	if err := run(interval); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
