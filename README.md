@@ -10,11 +10,8 @@ Features:
 
 ## Building
 
-```sh
-go mod tidy 
-go build -o boxtop .
-./boxtop 1    # 1-second refresh
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, and release
+instructions.
 
 ## TODOs
 - **No raw-mode fallback path.** This should detects a non-interactive
