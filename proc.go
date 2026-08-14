@@ -161,7 +161,7 @@ func parseStatNameCPU(raw string) (name string, cpuSecs float64, rssKb int64, ok
 	// tolerate a parse miss so a short/odd line still yields CPU + name.
 	if len(fields) > 21 {
 		if pages, err := strconv.ParseInt(fields[21], 10, 64); err == nil {
-			rssKb = pages * pageSizeKB
+			rssKb = pages * int64(pageSizeKB)
 		}
 	}
 	return name, float64(utime+stime) / clkTck, rssKb, true

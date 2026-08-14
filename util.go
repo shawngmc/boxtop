@@ -1,6 +1,9 @@
 package main
 
-import "runtime"
+import (
+	"runtime"
+	"syscall"
+)
 
 // runtimeNumCPU wraps runtime.NumCPU() so cgroup.go's fallback reads the
 // same way the Python version's final os.cpu_count() fallback does. Swap
@@ -20,7 +23,11 @@ const clkTck = 100.0
 // pageSizeKB mirrors PAGE_KB: the kernel page size in kB, used to convert
 // the page-count RSS from /proc/<pid>/stat field 24 into kB (see
 // parseStatNameCPU).
-// 4 KB is the near-universal Linux page size; read it via
-// golang.org/x/sys/unix or syscall.Getpagesize() if you need to support
-// kernels/arches with a different page size.
-const pageSizeKB = 4
+// The base page size is architecture- and (on arm64/ppc64/mips) kernel-build-
+// dependent, so we read it at runtime rather than assuming 4 KB: it's 16 KB on
+// Apple Silicon (Asahi) and loongarch64, commonly 64 KB on enterprise POWER,
+// 8 KB on sparc64/alpha, and configurable to 16/64 KB on arm64. syscall.
+// Getpagesize() returns the base page size in bytes (cached from AT_PAGESZ,
+// not a real syscall per call), which is the unit /proc/<pid>/stat field 24
+// counts in.
+var pageSizeKB = syscall.Getpagesize() / 1024

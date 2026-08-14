@@ -22,12 +22,12 @@ func TestParseStatNameCPU(t *testing.T) {
 		wantOK   bool
 	}{
 		// sampleStatBash's rss field (field 24) is 600 pages.
-		{"normal", sampleStatBash, "bash", 18.0, 600 * pageSizeKB, true},
+		{"normal", sampleStatBash, "bash", 18.0, 600 * int64(pageSizeKB), true},
 		{"comm with spaces", "42 (foo bar) S 1 1 1 0 0 0 0 0 0 0 500 100 0 0 0 0 0 0 0 0 0 0", "foo bar", 6.0, 0, true},
 		{"comm with parens", "42 (a (b) c) S 1 1 1 0 0 0 0 0 0 0 100 0 0 0 0 0 0 0 0 0 0 0", "a (b) c", 1.0, 0, true},
 		{"empty comm", "42 () S 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", "?", 0.0, 0, true},
 		{"control char in comm sanitized", "42 (a\tb) S 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", "a b", 0.0, 0, true},
-		{"rss field parsed", "42 (x) S 1 1 1 0 0 0 0 0 0 0 10 20 0 0 0 0 0 0 0 0 700 0", "x", 0.3, 700 * pageSizeKB, true},
+		{"rss field parsed", "42 (x) S 1 1 1 0 0 0 0 0 0 0 10 20 0 0 0 0 0 0 0 0 700 0", "x", 0.3, 700 * int64(pageSizeKB), true},
 		{"no parens", "42 bash S 1 2 3", "", 0.0, 0, false},
 		{"too few fields after comm", "42 (bash) S 1 2 3", "bash", 0.0, 0, false},
 		{"non-numeric utime", "42 (bash) S 1 1 1 0 0 0 0 0 0 0 x 300 0 0 0 0 0 0 0 0 0 0", "bash", 0.0, 0, false},
