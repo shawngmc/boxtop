@@ -97,6 +97,13 @@ type monitorState struct {
 	// duplicating the layout math in the event handler).
 	headerRow    int
 	sortHitboxes []sortHitbox
+
+	// Process row click targets, recorded by drawFrame each frame alongside
+	// the header hitboxes above — tableTop is the screen row of the first
+	// drawn process, tableRowCount how many rows were actually drawn, so a
+	// click can map back to an index into currentProcs via scrollOffset.
+	tableTop      int
+	tableRowCount int
 }
 
 // sortHitbox is the half-open column span [x0, x1) on headerRow that selects
@@ -253,6 +260,17 @@ func (s *monitorState) sortColumnAt(x, y int) (sortColumn, bool) {
 		}
 	}
 	return 0, false
+}
+
+// rowAt maps a click's screen row to an absolute index into currentProcs, if
+// the click landed within the drawn table body (not the header, footer, or a
+// short table's empty trailing space). Any column selects the row — unlike
+// sortColumnAt, there's no per-column behavior to distinguish.
+func (s *monitorState) rowAt(y int) (int, bool) {
+	if y < s.tableTop || y >= s.tableTop+s.tableRowCount {
+		return 0, false
+	}
+	return s.scrollOffset + (y - s.tableTop), true
 }
 
 // sortProcesses ports sort_processes(): sorts in place per current state.

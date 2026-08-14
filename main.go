@@ -180,6 +180,10 @@ func handleEvent(screen tcell.Screen, state *monitorState, ev tcell.Event) (redr
 				state.setSortColumn(col)
 				return true, false
 			}
+			if row, ok := state.rowAt(my); ok {
+				state.cursor = row
+				return true, false
+			}
 		}
 		return false, false
 	case *tcell.EventResize:

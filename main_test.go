@@ -43,6 +43,39 @@ func TestHandleNormalKeyMovesCursorAndOpensKillConfirm(t *testing.T) {
 	}
 }
 
+func TestHandleEventClickSelectsRow(t *testing.T) {
+	s := newMonitorState()
+	s.currentProcs = []Process{
+		{PID: 1, Name: "init"},
+		{PID: 2, Name: "bash"},
+		{PID: 3, Name: "sleep"},
+	}
+	s.tableTop = 10
+	s.tableRowCount = 3
+	s.cursor = 0
+
+	click := tcell.NewEventMouse(4, 12, tcell.Button1, tcell.ModNone)
+	redraw, quit := handleEvent(nil, s, click)
+	if !redraw || quit {
+		t.Fatalf("click on row: redraw=%v quit=%v, want redraw=true quit=false", redraw, quit)
+	}
+	if s.cursor != 2 {
+		t.Errorf("cursor after click at y=12 = %d, want 2", s.cursor)
+	}
+
+	// A click outside the table body (e.g. the footer) is a no-op — it
+	// shouldn't move the cursor or force a redraw.
+	s.cursor = 1
+	outside := tcell.NewEventMouse(4, 20, tcell.Button1, tcell.ModNone)
+	redraw, quit = handleEvent(nil, s, outside)
+	if redraw || quit {
+		t.Errorf("click outside table: redraw=%v quit=%v, want both false", redraw, quit)
+	}
+	if s.cursor != 1 {
+		t.Errorf("cursor after click outside table = %d, want unchanged 1", s.cursor)
+	}
+}
+
 func TestHandleNormalKeyXWithNothingSelectedIsNoop(t *testing.T) {
 	s := newMonitorState() // currentProcs is nil, cursor is 0
 

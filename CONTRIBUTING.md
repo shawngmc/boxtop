@@ -29,6 +29,29 @@ isn't debuggable — fine for distribution, not for local hacking.
 go test ./...
 ```
 
+### Container integration test
+
+`integration/cgroup_container_test.go` (plus its worker half,
+`cgroup_dump_test.go` at the repo root) is excluded from the command above
+via a `//go:build integration` tag: it shells out to Docker and actually
+creates a container, so it's slower and needs a container runtime. It
+launches a container with a known `--memory`/`--cpus` limit and checks
+that boxtop's own cgroup-reading code (`readCgroupVal`/
+`readCgroupCPULimit` in `cgroup.go` — the same functions `collectFrame`
+calls every tick) recovers those exact numbers from inside it. The two
+files are split across a package boundary because the worker needs direct
+access to those unexported functions (so it must live in `package main`),
+while the driver just shells out to `docker` and needs no such access.
+They're coupled only by a small JSON contract on stdout. Run it explicitly
+with a Docker daemon available:
+
+```sh
+go test -tags integration -run TestCgroupDetectionInContainer -v ./integration
+```
+
+It skips itself (rather than failing) if `docker` isn't on `PATH` or the
+daemon isn't reachable.
+
 ## Cutting a pre-release
 
 Releases are built and published automatically by the

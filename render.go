@@ -330,6 +330,8 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 	}
 	state.syncScrollToCursor(shownRows)
 	visible := state.visibleProcesses(procs, shownRows)
+	state.tableTop = tableTop
+	state.tableRowCount = len(visible)
 
 	maxKb := float64(maxBytes) / 1024
 
@@ -405,7 +407,7 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		drawText(screen, procX, y, fmt.Sprintf("  OOM Kills: %d", data.oomKills), oomStyle)
 	}
 	y++
-	helpLine := " Ctrl+C/q exit | Sort: [m]em [c]pu [p]id [n]ame  [r]everse | Scroll: ↑↓/j/k PgUp/PgDn Home/End | Mouse: wheel scroll, click header to sort"
+	helpLine := " Ctrl+C/q exit | Sort: [m]em [c]pu [p]id [n]ame  [r]everse | Scroll: ↑↓/j/k PgUp/PgDn Home/End | Mouse: wheel scroll, click header to sort, click row to select"
 	helpStyle := tcell.StyleDefault
 	switch {
 	case state.killConfirmMode:

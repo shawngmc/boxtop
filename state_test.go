@@ -354,6 +354,30 @@ func TestStartKillConfirm(t *testing.T) {
 	}
 }
 
+func TestRowAt(t *testing.T) {
+	s := newMonitorState()
+	s.scrollOffset = 5
+	s.tableTop = 10
+	s.tableRowCount = 3 // rows at screen y = 10, 11, 12
+
+	tests := []struct {
+		y       int
+		wantIdx int
+		wantOK  bool
+	}{
+		{9, 0, false},  // above the table
+		{10, 5, true},  // first visible row -> scrollOffset + 0
+		{12, 7, true},  // last visible row -> scrollOffset + 2
+		{13, 0, false}, // below the table
+	}
+	for _, tc := range tests {
+		idx, ok := s.rowAt(tc.y)
+		if ok != tc.wantOK || (ok && idx != tc.wantIdx) {
+			t.Errorf("rowAt(%d) = (%d, %v), want (%d, %v)", tc.y, idx, ok, tc.wantIdx, tc.wantOK)
+		}
+	}
+}
+
 func TestKillResultMessage(t *testing.T) {
 	tests := []struct {
 		name string
