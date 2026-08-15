@@ -119,8 +119,14 @@ func writeMeter(w io.Writer, scope string, m meter) {
 func writeNonInteractiveFrame(w io.Writer, state *monitorState, data frameData, width int) {
 	fmt.Fprintf(w, "----- %s -----\n", time.Now().Format("2006-01-02 15:04:05"))
 
-	for i := 0; i < 3; i++ {
-		writeMeter(w, "cgroup", data.cgroupMeters[i])
+	if !data.cgroupHidden {
+		cgroupScope := "cgroup"
+		if data.cgroupName != "" {
+			cgroupScope = fmt.Sprintf("cgroup (%s)", data.cgroupName)
+		}
+		for i := 0; i < 3; i++ {
+			writeMeter(w, cgroupScope, data.cgroupMeters[i])
+		}
 	}
 	for i := 0; i < 3; i++ {
 		writeMeter(w, "system", data.systemMeters[i])

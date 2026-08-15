@@ -25,6 +25,60 @@ func firstLineWithPrefix(s, prefix string) (string, bool) {
 	return "", false
 }
 
+// cgroupFSMounted reports whether any cgroup v1 or v2 filesystem is
+// mounted under /sys/fs/cgroup, by walking /proc/self/mountinfo. This is
+// what lets collectFrame tell "no cgroup visible at all" (cgroupfs
+// unmounted or not delegated here — common in restricted or nested
+// containers) apart from "cgroup visible but genuinely unconstrained" (an
+// ordinary host, or any container that never passed --memory/--cpus):
+// both leave memory.max unreadable, but only the first one means there's
+// truly nothing to measure.
+//
+// A single statfs on /sys/fs/cgroup itself isn't enough: on a cgroup v1
+// host that path is often just a plain tmpfs used to hang the
+// per-controller directories off of (as on this repo's own dev/CI boxes),
+// with the actual "cgroup"-typed mounts nested one level down at paths
+// like /sys/fs/cgroup/memory — so the check has to walk the mount table,
+// not just stat the root.
+func cgroupFSMounted() bool {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		// Can't tell either way; assume mounted so an unreadable mount
+		// table never changes behavior on its own.
+		return true
+	}
+	return hasCgroupMount(string(data))
+}
+
+// hasCgroupMount is cgroupFSMounted's pure parsing half. mountinfo lines
+// look like:
+//
+//	29 22 0:25 / /sys/fs/cgroup ro,nosuid,nodev,noexec shared:4 - tmpfs tmpfs ro,mode=755
+//	30 29 0:26 / /sys/fs/cgroup/systemd rw,nosuid ... shared:5 - cgroup cgroup rw,...
+//
+// everything left of the literal " - " separator is positional fields
+// (mount point is the 5th); everything right of it starts with the
+// filesystem type.
+func hasCgroupMount(mountinfo string) bool {
+	for _, line := range strings.Split(mountinfo, "\n") {
+		sep := strings.Index(line, " - ")
+		if sep < 0 {
+			continue
+		}
+		pre := strings.Fields(line[:sep])
+		post := strings.Fields(line[sep+3:])
+		if len(pre) < 5 || len(post) < 1 {
+			continue
+		}
+		mountPoint, fsType := pre[4], post[0]
+		if (fsType == "cgroup" || fsType == "cgroup2") &&
+			(mountPoint == "/sys/fs/cgroup" || strings.HasPrefix(mountPoint, "/sys/fs/cgroup/")) {
+			return true
+		}
+	}
+	return false
+}
+
 // readCgroupVal ports read_cgroup_val(): tries the v2 path first, then
 // falls back to the v1 memory-controller path. Returns (value, true) on
 // success, (0, false) if the file doesn't exist or isn't a plain integer.
@@ -233,6 +287,66 @@ func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 		return float64(n), cpuSourceHost, true
 	}
 	return 0, "", false
+}
+
+// readCgroupName returns a short identifier for the current process's own
+// cgroup — e.g. "docker/1a2b3c4d5e6f" or "system.slice/foo.service" — for
+// display next to the top bar's "cgroup" header, parsed from
+// /proc/self/cgroup. Returns ("", false) when that file can't be read, or
+// when every controller line resolves to the host root ("/"): the latter
+// is also true inside a container using a private cgroup namespace (the
+// default for modern Docker/Podman), where the container's own cgroup
+// appears as its own root and so has nothing more specific to name — the
+// RAM/CPU meters above still report that container's real limits
+// correctly, only this cosmetic label has nothing to show.
+func readCgroupName() (string, bool) {
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return "", false
+	}
+	return parseCgroupName(string(data))
+}
+
+// parseCgroupName is readCgroupName's pure parsing half, split out for
+// testability the same way parseStatNameCPU/parseCPUModel are — it takes
+// /proc/self/cgroup's raw content ("<hierarchy-id>:<controllers>:<path>"
+// lines) and picks the most useful non-root path: cgroup v2's single
+// "0::<path>" line is preferred when present; otherwise the v1
+// memory-controller line, and failing that, any other controller line with
+// a non-root path — better than nothing when memory happens to be
+// co-mounted oddly.
+func parseCgroupName(data string) (string, bool) {
+	var v2Path, memPath, anyPath string
+	for _, line := range strings.Split(strings.TrimSpace(data), "\n") {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		hier, controllers, path := parts[0], parts[1], parts[2]
+		if path == "" || path == "/" {
+			continue
+		}
+		switch {
+		case hier == "0" && controllers == "":
+			v2Path = path
+		case strings.Contains(controllers, "memory"):
+			memPath = path
+		case anyPath == "":
+			anyPath = path
+		}
+	}
+
+	path := v2Path
+	if path == "" {
+		path = memPath
+	}
+	if path == "" {
+		path = anyPath
+	}
+	if path == "" {
+		return "", false
+	}
+	return strings.TrimPrefix(path, "/"), true
 }
 
 // readCgroupOOMKills returns the cumulative number of times the kernel has

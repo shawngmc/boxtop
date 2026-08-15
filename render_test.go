@@ -417,3 +417,45 @@ func TestDrawFrameShowsCgroupAndSystemMeters(t *testing.T) {
 		t.Error("top bar missing an \"unavailable\" system meter row")
 	}
 }
+
+// TestDrawFrameHidesCgroupSectionWhenUnconfined covers the fix for the case
+// where boxtop isn't running under any real cgroup confinement (bare host,
+// no container, no systemd resource limits): rather than show a "cgroup"
+// column whose numbers come from a different accounting method than
+// "system" (cgroup memory.current counts reclaimable page cache as used;
+// /proc/meminfo's MemAvailable-derived figure doesn't) and so never quite
+// agrees with it, the whole column is omitted and system gets full width.
+func TestDrawFrameHidesCgroupSectionWhenUnconfined(t *testing.T) {
+	screen := newTestScreen(t, 100, 24)
+	state := newMonitorState()
+	data := testFrameData(nil)
+	data.cgroupHidden = true
+	drawFrame(screen, state, data)
+
+	w, h := screen.Size()
+	// rowText(0) is the top bar's header row — checked directly (rather
+	// than via findRow, whose substring search would also match the
+	// unrelated "(cgroup usage may include cache/shared mem not in RSS)"
+	// footer note) to confirm the "cgroup" column header itself is gone.
+	if strings.Contains(rowText(screen, w, 0), "cgroup") {
+		t.Errorf("top bar header row should not show a \"cgroup\" column when cgroupHidden is set, got: %q", rowText(screen, w, 0))
+	}
+	if _, ok := findRow(screen, w, h, "system"); !ok {
+		t.Error("top bar missing the \"system\" column header")
+	}
+}
+
+// TestDrawFrameShowsCgroupName covers the header label added for a process
+// actually confined to a named cgroup (e.g. inside a container).
+func TestDrawFrameShowsCgroupName(t *testing.T) {
+	screen := newTestScreen(t, 100, 24)
+	state := newMonitorState()
+	data := testFrameData(nil)
+	data.cgroupName = "docker/1a2b3c4d5e6f"
+	drawFrame(screen, state, data)
+
+	w, h := screen.Size()
+	if _, ok := findRow(screen, w, h, "cgroup (docker/1a2b3c4d5e6f)"); !ok {
+		t.Error("top bar missing the cgroup name label")
+	}
+}

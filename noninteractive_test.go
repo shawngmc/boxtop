@@ -84,6 +84,40 @@ func TestWriteNonInteractiveFrameOOMKills(t *testing.T) {
 	}
 }
 
+func TestWriteNonInteractiveFrameHidesCgroupSectionWhenUnconfined(t *testing.T) {
+	state := newMonitorState()
+	data := testFrameData(nil)
+	data.cgroupHidden = true
+
+	var buf strings.Builder
+	writeNonInteractiveFrame(&buf, state, data, 100)
+	out := buf.String()
+
+	// "cgroup" alone would also match the unrelated "(cgroup usage may
+	// include cache/shared mem not in RSS)" footer note, so check for the
+	// meter-line prefix specifically.
+	if strings.Contains(out, "cgroup RAM") {
+		t.Errorf("output should omit the cgroup section when cgroupHidden is set, got: %q", out)
+	}
+	if !strings.Contains(out, "system RAM") {
+		t.Error("output missing system RAM meter line")
+	}
+}
+
+func TestWriteNonInteractiveFrameShowsCgroupName(t *testing.T) {
+	state := newMonitorState()
+	data := testFrameData(nil)
+	data.cgroupName = "docker/1a2b3c4d5e6f"
+
+	var buf strings.Builder
+	writeNonInteractiveFrame(&buf, state, data, 100)
+	out := buf.String()
+
+	if !strings.Contains(out, "cgroup (docker/1a2b3c4d5e6f)") {
+		t.Errorf("output missing cgroup name label, got: %q", out)
+	}
+}
+
 func TestPlainBar(t *testing.T) {
 	tests := []struct {
 		frac float64

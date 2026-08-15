@@ -200,6 +200,26 @@ type frameData struct {
 	systemMeters [3]meter
 	cpuInfoLine  string // CPU model + cur/max clockspeed, unchanged content from before, now its own row
 
+	// cgroupHidden is true when neither RAM nor CPU has a real cgroup limit
+	// (both fell back to host-wide totals) — i.e. boxtop isn't running
+	// under any meaningful resource confinement, so the "cgroup" column
+	// would just be a differently-accounted duplicate of "system" (cgroup
+	// memory.current counts reclaimable page cache as used; /proc/meminfo's
+	// MemAvailable-derived "system" figure doesn't, so the two numbers
+	// visibly disagree despite supposedly describing the same machine).
+	// Rather than show that confusing mismatch, the whole cgroup section is
+	// skipped and system meters get the full row width. Zero value (false)
+	// keeps existing callers/tests, which don't set this, showing the
+	// cgroup column as before.
+	cgroupHidden bool
+
+	// cgroupName is a short identifier for the process's own cgroup (e.g.
+	// "docker/1a2b3c4d5e6f"), shown next to the "cgroup" header when
+	// non-empty. Populated from readCgroupName; left blank whenever that
+	// can't resolve anything more specific than the host root, or when
+	// cgroupHidden is true.
+	cgroupName string
+
 	// cgroupRAMMaxBytes is the cgroup memory limit in bytes — kept outside
 	// the meter struct because drawFrame also needs it to size each
 	// process row's RSS-fraction bar, not just for display.
@@ -224,27 +244,42 @@ func collectFrame(state *monitorState) (frameData, error) {
 	if !okCurr {
 		currBytes, okCurr = readCgroupVal("memory.usage_in_bytes")
 	}
-	if !okMax || !okCurr {
-		return frameData{}, fmt.Errorf("could not read cgroup memory values — are resource limits set?")
-	}
 
 	host, haveHost := readHostMeminfo()
 
-	// When memory.max is "max", readCgroupVal falls through to
-	// memory.limit_in_bytes, which reports the kernel's "unlimited"
-	// sentinel (~LONG_MAX). That renders as a nonsensical exabyte-scale
-	// limit, so treat any limit at or above host RAM as "no cgroup limit"
-	// and use the host's total memory as the denominator instead.
 	ramNoLimit := false
-	if haveHost && (maxBytes <= 0 || maxBytes > host.totalKB*1024) {
-		maxBytes = host.totalKB * 1024
-		ramNoLimit = true
+	var cgroupRAM meter
+	if !okCurr {
+		// No cgroup memory accounting readable at all — either there's no
+		// cgroup filesystem here to begin with (common in restricted or
+		// nested containers where cgroupfs isn't delegated), or it's
+		// mounted but the memory controller specifically isn't enabled on
+		// this cgroup. Either way there's nothing to measure, so show it
+		// as unavailable — same as a missing swap controller elsewhere in
+		// this function — rather than the whole program refusing to run.
+		reason := "memory controller not enabled on this cgroup"
+		if !cgroupFSMounted() {
+			reason = "no cgroup filesystem visible"
+		}
+		cgroupRAM = unavailableMeter("RAM", reason)
+		maxBytes = 0
+	} else {
+		// memory.max failing to parse (v2's "max" sentinel for "no limit
+		// set", the common case for any host or container that never
+		// passed --memory) is folded into the same "not really
+		// constrained" bucket as v1's unlimited cgroups, which parse fine
+		// but as the kernel's ~LONG_MAX-ish sentinel. Both cases fall back
+		// to the host's total memory as the denominator.
+		if haveHost && (!okMax || maxBytes <= 0 || maxBytes > host.totalKB*1024) {
+			maxBytes = host.totalKB * 1024
+			ramNoLimit = true
+		}
+		ramSuffix := ""
+		if ramNoLimit {
+			ramSuffix = " (host)"
+		}
+		cgroupRAM = memMeter("RAM", currBytes, maxBytes, ramSuffix)
 	}
-	ramSuffix := ""
-	if ramNoLimit {
-		ramSuffix = " (host)"
-	}
-	cgroupRAM := memMeter("RAM", currBytes, maxBytes, ramSuffix)
 
 	coresLimit, cpuSource, haveCPULimit := readCgroupCPULimit()
 	var cpuPct *float64
@@ -294,6 +329,22 @@ func collectFrame(state *monitorState) (frameData, error) {
 	hostPct, hostOK := state.sampleHostCPUPct()
 	systemCPU = systemCPUMeter(hostPct, hostOK, runtimeNumCPU())
 
+	// Both RAM and CPU fell back to host-wide totals means there's no
+	// meaningful cgroup confinement to report — see the cgroupHidden field
+	// comment on frameData. A quota (cpuSourceQuota) is always meaningful,
+	// since something had to be explicitly configured to produce one at
+	// all; a cpuset only counts if it actually excludes a host core —
+	// cpuset.cpus.effective is readable (and lists every core) on plain
+	// systemd slices with no real restriction, e.g. outside any container.
+	haveRealCPULimit := haveCPULimit &&
+		(cpuSource == cpuSourceQuota ||
+			(cpuSource == cpuSourceCPUSet && coresLimit < float64(runtimeNumCPU())))
+	cgroupHidden := ramNoLimit && !haveRealCPULimit
+	var cgroupName string
+	if !cgroupHidden {
+		cgroupName, _ = readCgroupName()
+	}
+
 	oomKills, haveOOMData := readCgroupOOMKills()
 
 	cpuModel, haveCPUModel := readCPUModel()
@@ -313,6 +364,8 @@ func collectFrame(state *monitorState) (frameData, error) {
 		cgroupMeters:      [3]meter{meterRAM: cgroupRAM, meterCPU: cgroupCPU, meterSwap: cgroupSwap},
 		systemMeters:      [3]meter{meterRAM: systemRAM, meterCPU: systemCPU, meterSwap: systemSwap},
 		cpuInfoLine:       cpuInfoLine,
+		cgroupHidden:      cgroupHidden,
+		cgroupName:        cgroupName,
 		cgroupRAMMaxBytes: maxBytes,
 		procs:             procs,
 		totalRSSKb:        totalRSSKb,
@@ -363,16 +416,32 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 
 	y := 0
 
-	drawText(screen, 0, y, "cgroup", tcell.StyleDefault.Bold(true))
-	drawText(screen, dividerCol, y, "system", tcell.StyleDefault.Bold(true))
-	y++
-
-	for i := 0; i < 3; i++ {
-		// dividerCol-1 leaves a one-column gap so a truncated cgroup detail
-		// text never butts directly up against the system column's label.
-		drawMeter(screen, 0, y, dividerCol-1, data.cgroupMeters[i])
-		drawMeter(screen, dividerCol, y, w-dividerCol, data.systemMeters[i])
+	if data.cgroupHidden {
+		// No meaningful cgroup confinement detected (see the cgroupHidden
+		// field comment) — system gets the full row width instead of the
+		// usual half, and there's no cgroup column to label.
+		drawText(screen, 0, y, "system", tcell.StyleDefault.Bold(true))
 		y++
+		for i := 0; i < 3; i++ {
+			drawMeter(screen, 0, y, w, data.systemMeters[i])
+			y++
+		}
+	} else {
+		cgroupHeader := "cgroup"
+		if data.cgroupName != "" {
+			cgroupHeader = fmt.Sprintf("cgroup (%s)", data.cgroupName)
+		}
+		drawText(screen, 0, y, truncateVisible(cgroupHeader, dividerCol-1), tcell.StyleDefault.Bold(true))
+		drawText(screen, dividerCol, y, "system", tcell.StyleDefault.Bold(true))
+		y++
+
+		for i := 0; i < 3; i++ {
+			// dividerCol-1 leaves a one-column gap so a truncated cgroup detail
+			// text never butts directly up against the system column's label.
+			drawMeter(screen, 0, y, dividerCol-1, data.cgroupMeters[i])
+			drawMeter(screen, dividerCol, y, w-dividerCol, data.systemMeters[i])
+			y++
+		}
 	}
 
 	if data.cpuInfoLine != "" {
