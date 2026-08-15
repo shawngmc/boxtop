@@ -325,6 +325,87 @@ func TestMemMeter(t *testing.T) {
 	}
 }
 
+func TestFracGlyph(t *testing.T) {
+	tests := []struct {
+		frac float64
+		want rune
+	}{
+		{-0.1, ' '},
+		{0, ' '},
+		{0.05, ' '},
+		{0.1, '▏'},
+		{0.2, '▎'},
+		{0.5, '▌'},
+		{0.9, '▉'},
+		{0.99, '█'},
+		{1, '█'},
+		{1.5, '█'},
+	}
+	for _, tc := range tests {
+		if got := fracGlyph(tc.frac); got != tc.want {
+			t.Errorf("fracGlyph(%v) = %q, want %q", tc.frac, got, tc.want)
+		}
+	}
+}
+
+func TestDrawBarPartialCell(t *testing.T) {
+	screen := newTestScreen(t, 20, 1)
+	drawBar(screen, 0, 0, 10, 0.55, summaryStops)
+	got := rowText(screen, 10, 0)
+	want := "█████▌    "
+	if got != want {
+		t.Errorf("drawBar partial-cell row = %q, want %q", got, want)
+	}
+
+	_, _, filledStyle, _ := screen.GetContent(0, 0)
+	if fg, _, _ := filledStyle.Decompose(); fg == tcell.ColorDefault {
+		t.Error("filled bar cell has no distinct gradient foreground color")
+	}
+	_, _, boundaryStyle, _ := screen.GetContent(5, 0)
+	if fg, _, _ := boundaryStyle.Decompose(); fg == tcell.ColorDefault {
+		t.Error("boundary (partial) bar cell has no distinct gradient foreground color")
+	}
+	_, _, emptyStyle, _ := screen.GetContent(6, 0)
+	if emptyStyle != tcell.StyleDefault {
+		t.Errorf("empty bar cell style = %v, want tcell.StyleDefault (no explicit color)", emptyStyle)
+	}
+}
+
+func TestDrawMeterBracketsUncolored(t *testing.T) {
+	screen := newTestScreen(t, 40, 1)
+	m := memMeter("RAM", 512*1024*1024, 1024*1024*1024, "")
+	drawMeter(screen, 0, 0, 40, m)
+
+	row := []rune(rowText(screen, 40, 0))
+	openIdx, closeIdx := -1, -1
+	for i, r := range row {
+		switch r {
+		case '[':
+			openIdx = i
+		case ']':
+			closeIdx = i
+		}
+	}
+	if openIdx < 0 || closeIdx < 0 {
+		t.Fatalf("meter row %q missing bar brackets", string(row))
+	}
+
+	_, _, openStyle, _ := screen.GetContent(openIdx, 0)
+	if openStyle != tcell.StyleDefault {
+		t.Errorf("opening bracket style = %v, want tcell.StyleDefault (no explicit color)", openStyle)
+	}
+	_, _, closeStyle, _ := screen.GetContent(closeIdx, 0)
+	if closeStyle != tcell.StyleDefault {
+		t.Errorf("closing bracket style = %v, want tcell.StyleDefault (no explicit color)", closeStyle)
+	}
+
+	pctIdx := closeIdx + 2 // "] " then the percentage text
+	_, _, pctStyle, _ := screen.GetContent(pctIdx, 0)
+	if fg, _, _ := pctStyle.Decompose(); fg == tcell.ColorDefault {
+		t.Error("percentage text has no distinct gradient foreground color")
+	}
+}
+
 func TestUnavailableMeter(t *testing.T) {
 	m := unavailableMeter("SWAP", "no swap controller found")
 	if m.have {

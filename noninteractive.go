@@ -81,18 +81,36 @@ func runNonInteractive(interval time.Duration, initialFilter string) error {
 
 // plainBar is drawBar's plain-text equivalent: no color, just the block
 // characters, since a redirected/piped stdout has no styling to render.
+// Unlike drawBar (which shows its empty track as blank space on a black
+// background), plainBar has no background color to lean on, so its empty
+// track stays a visible '░' character — including the boundary cell when
+// fracGlyph rounds its remainder down to blank.
 func plainBar(length int, frac float64) string {
 	if length < 0 {
 		length = 0
 	}
-	filled := int(float64(length) * frac)
+	if frac < 0 {
+		frac = 0
+	} else if frac > 1 {
+		frac = 1
+	}
+	exact := float64(length) * frac
+	filled := int(exact)
 	if filled > length {
 		filled = length
 	}
-	if filled < 0 {
-		filled = 0
+	remainder := exact - float64(filled)
+	var b strings.Builder
+	b.WriteString(strings.Repeat("█", filled))
+	if filled < length {
+		boundary := fracGlyph(remainder)
+		if boundary == ' ' {
+			boundary = '░'
+		}
+		b.WriteRune(boundary)
+		b.WriteString(strings.Repeat("░", length-filled-1))
 	}
-	return strings.Repeat("█", filled) + strings.Repeat("░", length-filled)
+	return b.String()
 }
 
 // writeMeter is drawMeter's plain-text equivalent. Unlike the interactive

@@ -30,23 +30,77 @@ func drawText(screen tcell.Screen, x, y int, s string, style tcell.Style) int {
 	return x
 }
 
+// eighthBlocks holds the Unicode "eighth block" runes for 1/8 through 8/8
+// fill (▏ through █), used by fracGlyph to render a bar's boundary cell at
+// sub-cell granularity instead of snapping straight from empty to full.
+var eighthBlocks = [8]rune{'▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'}
+
+// fracGlyph maps a single cell's own fill fraction (0.0 = empty, 1.0 =
+// full) to the glyph that best represents it: ' ' (blank) for ~0/8, one
+// of the seven partial eighth-block runes for 1/8..7/8 (rounded to the
+// nearest eighth, ties rounding up), or '█' for ~8/8.
+func fracGlyph(frac float64) rune {
+	if frac <= 0 {
+		return ' '
+	}
+	if frac >= 1 {
+		return '█'
+	}
+	eighths := int(frac*8 + 0.5)
+	if eighths <= 0 {
+		return ' '
+	}
+	if eighths >= 8 {
+		return '█'
+	}
+	return eighthBlocks[eighths-1]
+}
+
+// emptyBarStyle is the track style for a progress bar's unfilled cells:
+// plain blank space with no explicit color set at all, so it renders as
+// the terminal's own natural background (black in the common case)
+// instead of a color this code forces — forcing a color here is what
+// produced a mismatched box in the first place.
+var emptyBarStyle = tcell.StyleDefault
+
 // drawBar renders a filled/empty block-character progress bar, matching
-// the "█"*filled + "░"*(len-filled) bar in render(), colored as a single
+// the "█"*filled + " "*(len-filled) bar in render(), colored as a single
 // gradient style for the whole bar (same as Python: colorize() wraps the
 // entire bar string in one escape based on the overall fraction, not a
-// per-character gradient).
+// per-character gradient). The single boundary cell between filled and
+// empty is rendered with one of the Unicode eighth-block glyphs
+// (▏▎▍▌▋▊▉) instead of snapping straight to empty, via fracGlyph. Empty
+// track cells (including a boundary cell whose fracGlyph rounds down to
+// blank) render as plain blank space on emptyBarStyle's solid black
+// background, rather than a colored or shaded character.
 func drawBar(screen tcell.Screen, x, y, length int, frac float64, stops []colorStop) int {
 	style := gradientStyle(frac, stops)
-	filled := int(float64(length) * frac)
+	if frac < 0 {
+		frac = 0
+	} else if frac > 1 {
+		frac = 1
+	}
+	exact := float64(length) * frac
+	filled := int(exact)
 	if filled > length {
 		filled = length
 	}
+	remainder := exact - float64(filled)
 	for i := 0; i < length; i++ {
-		ch := '░'
-		if i < filled {
+		var ch rune
+		switch {
+		case i < filled:
 			ch = '█'
+		case i == filled:
+			ch = fracGlyph(remainder)
+		default:
+			ch = ' '
 		}
-		screen.SetContent(x+i, y, ch, nil, style)
+		cellStyle := emptyBarStyle
+		if ch != ' ' {
+			cellStyle = style
+		}
+		screen.SetContent(x+i, y, ch, nil, cellStyle)
 	}
 	return x + length
 }
@@ -80,7 +134,9 @@ func drawMeter(screen tcell.Screen, x, y, width int, m meter) {
 		tx := drawText(screen, x, y, prefix, tcell.StyleDefault)
 		barX := drawBar(screen, tx, y, meterBarWidth, m.frac, m.stops)
 		pctPart := fmt.Sprintf("] %s ", m.pctText)
-		tx = drawText(screen, barX, y, pctPart, gradientStyle(m.frac, m.stops))
+		tx = drawText(screen, barX, y, "] ", tcell.StyleDefault)
+		tx = drawText(screen, tx, y, m.pctText, gradientStyle(m.frac, m.stops))
+		tx = drawText(screen, tx, y, " ", tcell.StyleDefault)
 		detailWidth := width - len(prefix) - meterBarWidth - len(pctPart)
 		drawText(screen, tx, y, truncateVisible(m.detail, detailWidth), tcell.StyleDefault)
 	}

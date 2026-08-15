@@ -126,7 +126,8 @@ func TestPlainBar(t *testing.T) {
 		{0, "░░░░"},
 		{1, "████"},
 		{0.5, "██░░"},
-		{2, "████"}, // over 100% clamps rather than overflowing
+		{2, "████"},   // over 100% clamps rather than overflowing
+		{0.6, "██▍░"}, // partial boundary cell renders an eighth-block glyph
 	}
 	for _, tc := range tests {
 		if got := plainBar(4, tc.frac); got != tc.want {
