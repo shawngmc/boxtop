@@ -43,7 +43,7 @@ docker run -d --name "$CONTAINER_NAME" \
 	alpine sleep infinity >/dev/null
 
 echo "copying boxtop into container..."
-docker cp "$REPO_ROOT/boxtop" "$CONTAINER_NAME:/boxtop"
+docker cp "$REPO_ROOT/boxtop" "$CONTAINER_NAME:/usr/local/bin/boxtop"
 
-echo "dropping into shell — run /boxtop once inside; 'exit' to leave the container running"
+echo "dropping into shell — run 'boxtop' once inside; 'exit' to leave the container running"
 exec docker exec -it "$CONTAINER_NAME" /bin/sh
