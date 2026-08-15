@@ -42,11 +42,6 @@ instructions.
 - **No trend/history view.** A small sparkline of RAM%/CPU% over the last
   N samples would show a slow climb toward the limit, not just the
   instantaneous value.
-- **Truncation is rune-count, not display-width.** The name/cmd truncation
-  in `render.go` counts runes via `len([]rune(...))`, not terminal
-  columns, so wide (e.g. CJK) characters desync column alignment.
-  `go-runewidth` is already a transitive dependency via tcell — use
-  `runewidth.Truncate`/`runewidth.Width` instead.
 - **Hardcoded to the running process's own cgroup.** `cgroup.go` always
   reads `/sys/fs/cgroup/...` for wherever boxtop itself is running. A
   `--cgroup <name-or-path>` flag would let boxtop run on the host and

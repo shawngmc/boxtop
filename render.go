@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 )
 
 const (
@@ -14,14 +15,17 @@ const (
 	pidWidth  = 7
 )
 
-// drawText writes a string into the screen buffer starting at (x, y), one
-// rune per cell, and returns the x position just past the text — the
-// tcell equivalent of appending a colored substring to render()'s frame
-// string in the Python version.
+// drawText writes a string into the screen buffer starting at (x, y),
+// advancing by each rune's display width (1 for most runes, 2 for wide
+// East Asian/emoji ones — tcell's SetContent docs warn that placing
+// content in the second cell of a wide rune has "undefined effects"), and
+// returns the x position just past the text — the tcell equivalent of
+// appending a colored substring to render()'s frame string in the Python
+// version.
 func drawText(screen tcell.Screen, x, y int, s string, style tcell.Style) int {
 	for _, r := range s {
 		screen.SetContent(x, y, r, nil, style)
-		x++
+		x += runewidth.RuneWidth(r)
 	}
 	return x
 }
@@ -542,14 +546,13 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 
 	for i, p := range visible {
 		isCursorRow := state.scrollOffset+i == state.cursor
-		name := p.Name
-		if len([]rune(name)) > nameWidth {
-			name = string([]rune(name)[:nameWidth-1]) + "…"
-		}
-		cmd := p.Cmd
-		if len([]rune(cmd)) > cmdWidth {
-			cmd = string([]rune(cmd)[:cmdWidth-1]) + "…"
-		}
+		// Truncate/pad by display width, not rune count, so a wide (e.g.
+		// CJK) rune in a process name or command doesn't desync the
+		// columns after it — runewidth.Truncate already accounts for the
+		// "…" tail's width, and FillRight pads to nameWidth/cmdWidth
+		// display cells the way "%-*s" pads to that many runes.
+		name := runewidth.FillRight(runewidth.Truncate(p.Name, nameWidth, "…"), nameWidth)
+		cmd := runewidth.FillRight(runewidth.Truncate(p.Cmd, cmdWidth, "…"), cmdWidth)
 
 		var rssFrac float64
 		if maxKb > 0 {
@@ -573,12 +576,14 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		cpuStyle = cursorRowStyle(cpuStyle, isCursorRow)
 
 		rowStyle := cursorRowStyle(tcell.StyleDefault, isCursorRow)
-		x := drawText(screen, 0, y, fmt.Sprintf(" %*d  %-*s  ", pidWidth, p.PID, nameWidth, name), rowStyle)
+		x := drawText(screen, 0, y, fmt.Sprintf(" %*d  ", pidWidth, p.PID), rowStyle)
+		x = drawText(screen, x, y, name, rowStyle)
+		x = drawText(screen, x, y, "  ", rowStyle)
 		x = drawText(screen, x, y, cpuText, cpuStyle)
 		x = drawText(screen, x, y, "  ", rowStyle)
 		x = drawText(screen, x, y, fmt.Sprintf("%*.1f", rssWidth, float64(p.RSSKb)/1024), rssStyle)
 		x = drawText(screen, x, y, "  ", rowStyle)
-		drawText(screen, x, y, fmt.Sprintf("%-*s", cmdWidth, cmd), rowStyle)
+		drawText(screen, x, y, cmd, rowStyle)
 		y++
 	}
 
