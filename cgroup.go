@@ -1,10 +1,90 @@
 package main
 
 import (
+	"io/fs"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
+
+// cgroupSuffix is the path, relative to each controller's own mount root,
+// of the cgroup boxtop reports on. Empty (the default) means "read
+// /sys/fs/cgroup/... directly", which the kernel already scopes to
+// whichever cgroup boxtop's own process happens to be running in — the
+// only behavior that existed before --cgroup was added. Set once from the
+// --cgroup flag in main() via normalizeCgroupOverride, before collectFrame
+// ever runs, so every reader below (and readCgroupName's display label)
+// stays consistent for the process's whole lifetime without needing to
+// thread an extra parameter through every call site.
+var cgroupSuffix string
+
+// cgroupFile builds the path to a single file within a cgroup hierarchy:
+// the v2 unified one when controller is "", or a v1 controller's own
+// hierarchy (e.g. "memory", "cpu", "cpuset") otherwise. cgroupSuffix is
+// spliced in between the hierarchy root and the filename, so setting it
+// via --cgroup redirects every reader in this file at an arbitrary cgroup
+// on the host instead of only the one boxtop itself is running in.
+func cgroupFile(controller, filename string) string {
+	p := "/sys/fs/cgroup"
+	if controller != "" {
+		p += "/" + controller
+	}
+	if cgroupSuffix != "" {
+		p += "/" + cgroupSuffix
+	}
+	return p + "/" + filename
+}
+
+// normalizeCgroupOverride turns a --cgroup flag value into the relative
+// form cgroupFile expects. Users may paste either the short name/path
+// --list-cgroups prints (e.g. "docker/1a2b3c4d5e6f") or a full absolute
+// path copied from elsewhere (e.g. "/sys/fs/cgroup/docker/1a2b3c4d5e6f");
+// stripping a leading "/sys/fs/cgroup" and surrounding slashes makes both
+// forms equivalent.
+func normalizeCgroupOverride(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "/sys/fs/cgroup")
+	return strings.Trim(s, "/")
+}
+
+// listCgroups enumerates every cgroup on the host, for --list-cgroups. It
+// walks the cgroup v2 unified hierarchy under /sys/fs/cgroup when present
+// (detected via cgroup.controllers, the standard unified-hierarchy marker
+// file), or otherwise the v1 memory controller's hierarchy — the same
+// controller readCgroupVal and friends already treat as the canonical v1
+// fallback — since v1's separate per-controller hierarchies are normally
+// kept in sync by whatever manages them (docker, systemd) and so share the
+// same names. Returned names are relative paths in the same
+// "docker/1a2b3c4d5e6f" / "system.slice/foo.service" form readCgroupName
+// reports and --cgroup accepts, sorted for stable output.
+func listCgroups() ([]string, error) {
+	root := "/sys/fs/cgroup"
+	if _, err := os.Stat(root + "/cgroup.controllers"); err != nil {
+		root = "/sys/fs/cgroup/memory"
+	}
+
+	var names []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if path == root {
+				return err
+			}
+			return nil // skip unreadable subtrees rather than aborting the whole walk
+		}
+		if !d.IsDir() || path == root {
+			return nil
+		}
+		names = append(names, strings.TrimPrefix(path, root+"/"))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(names)
+	return names, nil
+}
 
 // firstLineWithPrefix returns the first line of s beginning with prefix,
 // scanning in place via IndexByte rather than materializing the whole
@@ -84,8 +164,8 @@ func hasCgroupMount(mountinfo string) bool {
 // success, (0, false) if the file doesn't exist or isn't a plain integer.
 func readCgroupVal(filename string) (int64, bool) {
 	paths := []string{
-		"/sys/fs/cgroup/" + filename,
-		"/sys/fs/cgroup/memory/" + filename,
+		cgroupFile("", filename),
+		cgroupFile("memory", filename),
 	}
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
@@ -237,7 +317,7 @@ func countCPUList(s string) int {
 // total CPU count. Returns (0, "", false) if nothing could be determined.
 func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 	// cgroup v2: single file, "$QUOTA $PERIOD" or "max $PERIOD"
-	if data, err := os.ReadFile("/sys/fs/cgroup/cpu.max"); err == nil {
+	if data, err := os.ReadFile(cgroupFile("", "cpu.max")); err == nil {
 		parts := strings.Fields(strings.TrimSpace(string(data)))
 		if len(parts) == 2 && parts[0] != "max" {
 			quota, errQ := strconv.ParseInt(parts[0], 10, 64)
@@ -248,8 +328,8 @@ func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 		}
 	} else {
 		// cgroup v1: two separate files
-		quotaData, errQ := os.ReadFile("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
-		periodData, errP := os.ReadFile("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+		quotaData, errQ := os.ReadFile(cgroupFile("cpu", "cpu.cfs_quota_us"))
+		periodData, errP := os.ReadFile(cgroupFile("cpu", "cpu.cfs_period_us"))
 		if errQ == nil && errP == nil {
 			quota, e1 := strconv.ParseInt(strings.TrimSpace(string(quotaData)), 10, 64)
 			period, e2 := strconv.ParseInt(strings.TrimSpace(string(periodData)), 10, 64)
@@ -261,9 +341,9 @@ func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 
 	// No enforced quota — fall back to the cpuset this cgroup is pinned to.
 	cpusetPaths := []string{
-		"/sys/fs/cgroup/cpuset.cpus.effective",
-		"/sys/fs/cgroup/cpuset.cpus",
-		"/sys/fs/cgroup/cpuset/cpuset.cpus",
+		cgroupFile("", "cpuset.cpus.effective"),
+		cgroupFile("", "cpuset.cpus"),
+		cgroupFile("cpuset", "cpuset.cpus"),
 	}
 	for _, p := range cpusetPaths {
 		data, err := os.ReadFile(p)
@@ -297,7 +377,14 @@ func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 // appears as its own root and so has nothing more specific to name — the
 // RAM/CPU meters above still report that container's real limits
 // correctly, only this cosmetic label has nothing to show.
+//
+// When --cgroup has redirected boxtop at a cgroup other than its own,
+// cgroupSuffix already *is* the name to display — /proc/self/cgroup would
+// only describe boxtop's own (irrelevant) cgroup in that case.
 func readCgroupName() (string, bool) {
+	if cgroupSuffix != "" {
+		return cgroupSuffix, true
+	}
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
 		return "", false
@@ -365,8 +452,8 @@ func parseCgroupName(data string) (string, bool) {
 // measured."
 func readCgroupOOMKills() (int64, bool) {
 	paths := []string{
-		"/sys/fs/cgroup/memory.events",
-		"/sys/fs/cgroup/memory/memory.oom_control",
+		cgroupFile("", "memory.events"),
+		cgroupFile("memory", "memory.oom_control"),
 	}
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
@@ -388,7 +475,7 @@ func readCgroupOOMKills() (int64, bool) {
 // readCgroupCPUUsageUsec ports read_cgroup_cpu_usage_usec(): cumulative
 // CPU time consumed by the whole cgroup, in microseconds, since creation.
 func readCgroupCPUUsageUsec() (int64, bool) {
-	if data, err := os.ReadFile("/sys/fs/cgroup/cpu.stat"); err == nil {
+	if data, err := os.ReadFile(cgroupFile("", "cpu.stat")); err == nil {
 		if line, ok := firstLineWithPrefix(string(data), "usage_usec"); ok {
 			fields := strings.Fields(line)
 			if len(fields) == 2 {
@@ -400,8 +487,8 @@ func readCgroupCPUUsageUsec() (int64, bool) {
 	}
 
 	v1Paths := []string{
-		"/sys/fs/cgroup/cpuacct/cpuacct.usage",
-		"/sys/fs/cgroup/cpu,cpuacct/cpuacct.usage",
+		cgroupFile("cpuacct", "cpuacct.usage"),
+		cgroupFile("cpu,cpuacct", "cpuacct.usage"),
 	}
 	for _, p := range v1Paths {
 		data, err := os.ReadFile(p)

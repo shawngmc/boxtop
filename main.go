@@ -20,8 +20,8 @@ import (
 var version = "dev"
 
 func main() {
-	var colorblind, showVersion, nonInteractive bool
-	var filter string
+	var colorblind, showVersion, nonInteractive, listCgroupsFlag bool
+	var filter, cgroupOverride string
 	flag.BoolVar(&colorblind, "colorblind", false, "use the colorblind-friendly palette")
 	flag.BoolVar(&colorblind, "c", false, "shorthand for --colorblind")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
@@ -29,6 +29,8 @@ func main() {
 	flag.StringVar(&filter, "f", "", "shorthand for --filter")
 	flag.BoolVar(&nonInteractive, "non-interactive", false, "skip the interactive TUI: wait one refresh_interval_seconds tick, then print one snapshot (header, full process list, simplified footer) and exit. Auto-enabled when stdin or stdout isn't a terminal (piped/redirected).")
 	flag.BoolVar(&nonInteractive, "n", false, "shorthand for --non-interactive")
+	flag.StringVar(&cgroupOverride, "cgroup", "", "monitor a specific cgroup's RAM/CPU/Swap limits instead of boxtop's own, by name or path (e.g. docker/1a2b3c4d5e6f, system.slice/foo.service, or a full /sys/fs/cgroup/... path) — see --list-cgroups for valid names. The process list is still the host's own /proc, unscoped by this flag.")
+	flag.BoolVar(&listCgroupsFlag, "list-cgroups", false, "print every cgroup name found on the host, one per line, then exit (use with --cgroup)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [refresh_interval_seconds] [flags]\n\n", os.Args[0])
@@ -42,6 +44,20 @@ func main() {
 		fmt.Println("boxtop", version)
 		return
 	}
+
+	if listCgroupsFlag {
+		names, err := listCgroups()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		for _, name := range names {
+			fmt.Println(name)
+		}
+		return
+	}
+
+	cgroupSuffix = normalizeCgroupOverride(cgroupOverride)
 
 	interval := time.Second
 	if args := flag.Args(); len(args) > 0 {

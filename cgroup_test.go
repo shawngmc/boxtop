@@ -129,6 +129,53 @@ func TestHasCgroupMount(t *testing.T) {
 	}
 }
 
+func TestNormalizeCgroupOverride(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"bare name", "docker/1a2b3c4d5e6f", "docker/1a2b3c4d5e6f"},
+		{"absolute v2 path", "/sys/fs/cgroup/docker/1a2b3c4d5e6f", "docker/1a2b3c4d5e6f"},
+		{"trailing slash", "docker/1a2b3c4d5e6f/", "docker/1a2b3c4d5e6f"},
+		{"surrounding whitespace", "  docker/1a2b3c4d5e6f  ", "docker/1a2b3c4d5e6f"},
+		{"empty", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeCgroupOverride(tc.raw); got != tc.want {
+				t.Errorf("normalizeCgroupOverride(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCgroupFile(t *testing.T) {
+	old := cgroupSuffix
+	defer func() { cgroupSuffix = old }()
+
+	tests := []struct {
+		name       string
+		suffix     string
+		controller string
+		filename   string
+		want       string
+	}{
+		{"v2, own cgroup", "", "", "memory.max", "/sys/fs/cgroup/memory.max"},
+		{"v1, own cgroup", "", "memory", "memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.limit_in_bytes"},
+		{"v2, overridden", "docker/1a2b3c4d5e6f", "", "memory.max", "/sys/fs/cgroup/docker/1a2b3c4d5e6f/memory.max"},
+		{"v1, overridden", "docker/1a2b3c4d5e6f", "memory", "memory.limit_in_bytes", "/sys/fs/cgroup/memory/docker/1a2b3c4d5e6f/memory.limit_in_bytes"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cgroupSuffix = tc.suffix
+			if got := cgroupFile(tc.controller, tc.filename); got != tc.want {
+				t.Errorf("cgroupFile(%q, %q) = %q, want %q", tc.controller, tc.filename, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFirstLineWithPrefix(t *testing.T) {
 	const meminfo = "MemTotal:       16384000 kB\nMemFree:         8192000 kB\nMemAvailable:   12000000 kB\n"
 

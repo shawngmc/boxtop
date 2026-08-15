@@ -27,6 +27,13 @@ Features:
   simplified footer) and exits instead of running the TUI — auto-enabled
   when stdin or stdout isn't a terminal (piped/redirected), or forced with
   `--non-interactive`/`-n`
+- `--cgroup <name-or-path>` points boxtop at any cgroup on the host instead
+  of its own — e.g. `--cgroup docker/1a2b3c4d5e6f` or a full
+  `/sys/fs/cgroup/...` path — so it can run on the host and watch a
+  container's RAM/CPU/Swap meters without `docker exec`-ing into it (the
+  process list is still the host's own `/proc`, unscoped by `--cgroup`);
+  `--list-cgroups` prints every cgroup name found on the host to help pick
+  one
 
 
 
@@ -42,10 +49,6 @@ instructions.
 - **No trend/history view.** A small sparkline of RAM%/CPU% over the last
   N samples would show a slow climb toward the limit, not just the
   instantaneous value.
-- **Hardcoded to the running process's own cgroup.** `cgroup.go` always
-  reads `/sys/fs/cgroup/...` for wherever boxtop itself is running. A
-  `--cgroup <name-or-path>` flag would let boxtop run on the host and
-  watch a specific container without `docker exec`-ing into it.
 - **Kernel thread cmdline reads are wasted.** `cmdFor` in `proc.go` does a
   full `open`/`read`/`close` of `/proc/<pid>/cmdline` on every cache miss,
   which always comes back empty for kernel threads. The `flags` field
