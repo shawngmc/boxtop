@@ -36,12 +36,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, and release
 instructions.
 
 ## TODOs
-- **`golang.org/x/sys/unix` niceties omitted.** `runtimeNumCPU()` uses
-  `runtime.NumCPU()` (host total) rather than
-  `unix.SchedGetaffinity` (schedulable cores), and `CLK_TCK`/page size
-  are hardcoded constants rather than read via `sysconf`. Noted inline
-  in `util.go` — swap in `x/sys/unix` if exact parity matters for your
-  containers.
 - **No cache-vs-anon breakdown.** `memory.stat`'s `anon`/`file` split would
   let users tell reclaimable page cache apart from a real leak, instead of
   just disclaiming the ambiguity in the footer line.

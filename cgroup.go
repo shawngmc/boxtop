@@ -279,10 +279,8 @@ func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 		}
 	}
 
-	// Last resort: host's total core count. (Go's stdlib doesn't expose
-	// sched_getaffinity directly the way Python's os.sched_getaffinity
-	// does; golang.org/x/sys/unix.SchedGetaffinity could be used here for
-	// exact parity if that distinction matters for your containers.)
+	// Last resort: this thread's schedulable core count (runtimeNumCPU,
+	// via sched_getaffinity), mirroring Python's os.sched_getaffinity(0).
 	if n := runtimeNumCPU(); n > 0 {
 		return float64(n), cpuSourceHost, true
 	}

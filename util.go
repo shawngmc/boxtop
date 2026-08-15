@@ -4,21 +4,32 @@ import (
 	"fmt"
 	"runtime"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
-// runtimeNumCPU wraps runtime.NumCPU() so cgroup.go's fallback reads the
-// same way the Python version's final os.cpu_count() fallback does. Swap
-// this for golang.org/x/sys/unix.SchedGetaffinity if you want exact
-// parity with Python's os.sched_getaffinity(0) (schedulable cores, which
-// can be a subset of the host total on some container setups).
+// runtimeNumCPU mirrors Python's final os.sched_getaffinity(0) fallback:
+// the schedulable core count for this thread, which can be a subset of
+// the host total (e.g. under a container runtime that pins via affinity
+// mask rather than a cgroup cpuset). Falls back to runtime.NumCPU() (host
+// total) if the syscall fails, which shouldn't happen on Linux.
 func runtimeNumCPU() int {
+	var set unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &set); err == nil {
+		if n := set.Count(); n > 0 {
+			return n
+		}
+	}
 	return runtime.NumCPU()
 }
 
 // clkTck mirrors CLK_TCK in the Python version (os.sysconf(SC_CLK_TCK)).
-// 100 is the near-universal value on Linux; use
-// golang.org/x/sys/unix.SysconfClktck() (via cgo) if you need to be
-// rigorous about non-standard kernels.
+// 100 is the near-universal value on Linux. Exact parity would need cgo's
+// C.sysconf(_SC_CLK_TCK) — golang.org/x/sys/unix has no pure-Go path to
+// it on Linux (no SysconfClktck, no AT_CLKTCK auxv support) — and cgo
+// would break the CGO_ENABLED=0 static builds scripts/create-test-container.sh
+// relies on to run boxtop inside a musl/Alpine container, so this stays a
+// constant.
 const clkTck = 100.0
 
 // pageSizeKB mirrors PAGE_KB: the kernel page size in kB, used to convert
