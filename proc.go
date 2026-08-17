@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,7 +26,25 @@ type Process struct {
 // sanitize ports sanitize(): replaces control characters (newlines, tabs)
 // that could appear in argv/comm and would break the table's line-based
 // layout. NUL bytes are handled separately in cmdline parsing.
+//
+// Called once per process per tick (name) and once per new pid (cmdline),
+// but real process names/cmdlines almost never contain control characters,
+// so it first scans read-only for one; only when it actually finds a
+// replacement to make does it pay for the Builder allocation and copy. This
+// keeps the overwhelmingly common case allocation-free instead of always
+// building a fresh string.
 func sanitize(s string) string {
+	needsFix := false
+	for _, r := range s {
+		if r < 32 && r != 0 {
+			needsFix = true
+			break
+		}
+	}
+	if !needsFix {
+		return s
+	}
+
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
@@ -40,19 +57,98 @@ func sanitize(s string) string {
 	return b.String()
 }
 
-// listPIDs ports list_pids(): every numeric entry under /proc.
-func listPIDs() []int {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
+// direntReclenOffset/direntNameOffset are the byte offsets of the Reclen and
+// Name fields within the kernel's getdents64 dirent record, per
+// syscall.Dirent's layout — used by listPIDs to parse raw directory entries
+// without going through os.ReadDir. Computed once rather than re-measured
+// per entry.
+var (
+	direntReclenOffset = int(unsafe.Offsetof(syscall.Dirent{}.Reclen))
+	direntNameOffset   = int(unsafe.Offsetof(syscall.Dirent{}.Name))
+)
+
+// direntReclen reads a raw getdents64 record's Reclen field (how many bytes
+// of buf this one record occupies, header included) via plain byte shifts
+// rather than an unsafe.Pointer cast, so it works regardless of the buffer's
+// alignment — same approach the standard library's own (unexported)
+// dirent-parsing helpers use internally. Little-endian only, matching every
+// realistic boxtop target (amd64/arm64).
+func direntReclen(buf []byte) (int, bool) {
+	if len(buf) < direntReclenOffset+2 {
+		return 0, false
 	}
-	pids := make([]int, 0, len(entries))
-	for _, e := range entries {
-		if pid, err := strconv.Atoi(e.Name()); err == nil {
-			pids = append(pids, pid)
+	return int(buf[direntReclenOffset]) | int(buf[direntReclenOffset+1])<<8, true
+}
+
+// direntPID extracts rec's NUL-terminated Name field as a pid, entirely
+// without allocating a string: it walks the raw name bytes directly,
+// accumulating a decimal value digit by digit, and rejects (ok=false) the
+// instant it sees a non-digit byte or the NUL terminator with zero digits
+// consumed — which is what makes this fast for /proc's ~60 non-pid entries
+// (self, cpuinfo, meminfo, ..., plus "." and "..") as well as the numeric
+// ones: every one of them is rejected (or accepted) in a single pass with
+// no heap traffic at all.
+func direntPID(rec []byte) (int, bool) {
+	if len(rec) <= direntNameOffset {
+		return 0, false
+	}
+	pid := 0
+	digits := 0
+	for _, c := range rec[direntNameOffset:] {
+		if c == 0 {
+			break
+		}
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		pid = pid*10 + int(c-'0')
+		digits++
+	}
+	return pid, digits > 0
+}
+
+// listPIDs ports list_pids(): every numeric entry under /proc. buf is a
+// reusable scratch buffer (state.dirBuf), grown if too small for a single
+// getdents64 call's worth of raw entries — mirrors readProcFile's
+// buf/newBuf convention.
+//
+// Reads the directory via raw getdents64 syscalls instead of os.ReadDir:
+// profiling showed os.ReadDir's sorted []DirEntry (one os.newUnixDirent
+// allocation plus a cloned name string per entry, for every one of /proc's
+// ~360+ entries including its ~60 non-pid ones) was a large share of every
+// tick's allocations — for a sort order and DirEntry API this function
+// immediately throws away in favor of a bare []int anyway. This parses
+// straight out of the raw kernel buffer via direntPID, which only ever
+// allocates for pids themselves (appending an int, not a string, to the
+// result slice) — the non-pid entries that make up roughly a sixth of
+// /proc's contents cost a handful of byte comparisons each, nothing more.
+func listPIDs(buf []byte) (pids []int, newBuf []byte) {
+	fd, err := syscall.Open("/proc", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, buf
+	}
+	defer syscall.Close(fd)
+
+	pids = make([]int, 0, 512)
+	for {
+		n, err := syscall.Getdents(fd, buf)
+		if err != nil || n <= 0 {
+			break
+		}
+		data := buf[:n]
+		for len(data) > 0 {
+			reclen, ok := direntReclen(data)
+			if !ok || reclen <= 0 || reclen > len(data) {
+				break
+			}
+			rec := data[:reclen]
+			data = data[reclen:]
+			if pid, ok := direntPID(rec); ok {
+				pids = append(pids, pid)
+			}
 		}
 	}
-	return pids
+	return pids, buf
 }
 
 // procStatPath builds the /proc/<pid>/stat path for a pid.
@@ -141,30 +237,82 @@ func parseStatNameCPU(raw string) (name string, cpuSecs float64, rssKb int64, ok
 	}
 	// comm is between the first '(' and last ')'; the kernel caps it at 15
 	// chars (no path/args), identical to what /proc/<pid>/comm reported.
-	name = sanitize(raw[lp+1 : rp])
+	//
+	// raw aliases the caller's reusable read buffer (bytesToStr is a
+	// zero-copy cast), which gets overwritten by the next pid's /stat (and
+	// /cmdline) read in the hot loop — so the substring is cloned into
+	// independent memory *before* sanitize, not after. sanitize's fast path
+	// returns its input unchanged when nothing needs fixing; if that input
+	// were still the raw substring, the returned name would alias the
+	// buffer too, and silently go stale (wrong text / garbage bytes) the
+	// moment the loop reused it for the next pid. Cloning first means the
+	// fast path's "return unchanged" is always already-independent memory.
+	name = sanitize(strings.Clone(raw[lp+1 : rp]))
 	if name == "" {
 		name = "?"
 	}
 
-	fields := strings.Fields(raw[rp+1:])
 	// fields[0] is field 3 (state); utime is field 14, stime 15, rss 24 —
 	// i.e. indices 11, 12, and 21 once state (field 3) is index 0.
-	if len(fields) < 13 {
+	f11, f12, f21, haveCPU, haveRSS := statTailFields(raw[rp+1:])
+	if !haveCPU {
 		return name, 0, 0, false
 	}
-	utime, e1 := strconv.ParseInt(fields[11], 10, 64)
-	stime, e2 := strconv.ParseInt(fields[12], 10, 64)
+	utime, e1 := strconv.ParseInt(f11, 10, 64)
+	stime, e2 := strconv.ParseInt(f12, 10, 64)
 	if e1 != nil || e2 != nil {
 		return name, 0, 0, false
 	}
 	// rss (field 24) is present in every real stat line; guard the index and
 	// tolerate a parse miss so a short/odd line still yields CPU + name.
-	if len(fields) > 21 {
-		if pages, err := strconv.ParseInt(fields[21], 10, 64); err == nil {
+	if haveRSS {
+		if pages, err := strconv.ParseInt(f21, 10, 64); err == nil {
 			rssKb = pages * int64(pageSizeKB)
 		}
 	}
 	return name, float64(utime+stime) / clkTck, rssKb, true
+}
+
+// statTailFields extracts fields 11, 12, and 21 (0-based, utime/stime/rss)
+// of the /stat tail without allocating the ~49-element slice
+// strings.Fields would to reach them — this runs once per process per tick,
+// and only 3 of the ~49 fields it produced were ever used. Splits on plain
+// ' ' rather than generic whitespace: /proc/<pid>/stat's numeric tail is
+// always space-separated, so this is equivalent to strings.Fields here, just
+// without materializing the intermediate slice.
+//
+// haveCPU mirrors the old `len(fields) < 13` guard (true once field 12 is
+// reached, i.e. at least 13 fields exist); haveRSS mirrors `len(fields) >
+// 21` (true once field 21 is reached).
+func statTailFields(s string) (f11, f12, f21 string, haveCPU, haveRSS bool) {
+	idx := 0
+	i := 0
+	for i < len(s) {
+		for i < len(s) && s[i] == ' ' {
+			i++
+		}
+		if i >= len(s) {
+			break
+		}
+		start := i
+		for i < len(s) && s[i] != ' ' {
+			i++
+		}
+		field := s[start:i]
+		switch idx {
+		case 11:
+			f11 = field
+		case 12:
+			f12 = field
+			haveCPU = true
+		case 21:
+			f21 = field
+			haveRSS = true
+			return
+		}
+		idx++
+	}
+	return
 }
 
 // cmdFor returns the full COMMAND string for pid, reading and caching
@@ -250,7 +398,8 @@ func buildProcesses(state *monitorState, coresLimit float64) []Process {
 	seen := state.procSeen
 	clear(seen)
 
-	pids := listPIDs()
+	pids, dirBuf := listPIDs(state.dirBuf)
+	state.dirBuf = dirBuf
 	procs := make([]Process, 0, len(pids))
 
 	for _, pid := range pids {

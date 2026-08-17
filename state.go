@@ -100,6 +100,7 @@ type monitorState struct {
 	cmdCache    map[int]string    // per-pid COMMAND string, read once per process lifetime
 	procSeen    map[int]bool      // scratch set of pids seen this tick, cleared+reused each frame
 	readBuf     []byte            // scratch buffer for raw /proc reads, reused across pids and ticks
+	dirBuf      []byte            // scratch buffer for listPIDs' raw getdents64 reads, reused across ticks
 
 	// filterMode is true while the incremental filter's text input has
 	// focus (opened via '/', ported from htop's F4 filter bar). filterQuery
@@ -228,7 +229,8 @@ func newMonitorState() *monitorState {
 		procCPUPrev:  make(map[int]cpuSample),
 		cmdCache:     make(map[int]string),
 		procSeen:     make(map[int]bool),
-		readBuf:      make([]byte, 4096), // one page-ish; grows only for rare large cmdlines
+		readBuf:      make([]byte, 4096),  // one page-ish; grows only for rare large cmdlines
+		dirBuf:       make([]byte, 32768), // large enough to hold /proc's whole entry list in one getdents64 call on most hosts
 	}
 }
 

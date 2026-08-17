@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -141,5 +143,89 @@ func TestBuildProcessesLive(t *testing.T) {
 	procs2 := buildProcesses(state, 1.0)
 	if len(procs2) == 0 {
 		t.Fatal("second buildProcesses returned no processes")
+	}
+}
+
+// TestDirentReclen checks the raw getdents64 record-length reader against a
+// synthetic buffer, independent of any real directory read.
+func TestDirentReclen(t *testing.T) {
+	buf := make([]byte, direntReclenOffset+2)
+	buf[direntReclenOffset] = 0x34
+	buf[direntReclenOffset+1] = 0x12
+	if got, ok := direntReclen(buf); !ok || got != 0x1234 {
+		t.Errorf("direntReclen(full buf) = (%d, %v), want (4660, true)", got, ok)
+	}
+	if _, ok := direntReclen(buf[:direntReclenOffset+1]); ok {
+		t.Error("direntReclen should fail (ok=false) on a buffer truncated mid-field")
+	}
+}
+
+// TestDirentPID checks direntPID's all-digit parsing against synthetic
+// dirent records built at the real Dirent.Name offset, covering both real
+// pids and the non-numeric entries /proc always mixes them with (self,
+// ".", "..", empty).
+func TestDirentPID(t *testing.T) {
+	makeRec := func(name string) []byte {
+		reclen := direntNameOffset + len(name) + 1 // +1: NUL terminator
+		rec := make([]byte, reclen)
+		rec[direntReclenOffset] = byte(reclen)
+		rec[direntReclenOffset+1] = byte(reclen >> 8)
+		copy(rec[direntNameOffset:], name)
+		return rec
+	}
+
+	tests := []struct {
+		name    string
+		wantPID int
+		wantOK  bool
+	}{
+		{"1234", 1234, true},
+		{"1", 1, true},
+		{"0", 0, true},
+		{"self", 0, false},
+		{"cpuinfo", 0, false},
+		{".", 0, false},
+		{"..", 0, false},
+		{"", 0, false},
+		{"12a4", 0, false},
+	}
+	for _, tc := range tests {
+		pid, ok := direntPID(makeRec(tc.name))
+		if pid != tc.wantPID || ok != tc.wantOK {
+			t.Errorf("direntPID(%q) = (%d, %v), want (%d, %v)", tc.name, pid, ok, tc.wantPID, tc.wantOK)
+		}
+	}
+}
+
+// TestListPIDsMatchesReadDirScan cross-checks listPIDs' raw getdents64 scan
+// against an independent os.ReadDir+strconv.Atoi scan of the same live
+// /proc — the reference implementation listPIDs replaced. The two scans
+// aren't atomic with each other, so processes can start/exit in between;
+// this allows a small slack rather than requiring an identical set.
+func TestListPIDsMatchesReadDirScan(t *testing.T) {
+	got, _ := listPIDs(make([]byte, 32768))
+	sort.Ints(got)
+
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []int
+	for _, e := range entries {
+		if pid, err := strconv.Atoi(e.Name()); err == nil {
+			want = append(want, pid)
+		}
+	}
+	sort.Ints(want)
+
+	if len(got) == 0 {
+		t.Fatal("listPIDs returned zero pids on a live system")
+	}
+	diff := len(want) - len(got)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 5 {
+		t.Errorf("listPIDs found %d pids, os.ReadDir-based scan found %d — too far apart", len(got), len(want))
 	}
 }
