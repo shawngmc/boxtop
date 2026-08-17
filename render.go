@@ -121,7 +121,19 @@ const meterBarWidth = 20
 // by the next column's own drawText calls on the same row — so the
 // variable-length part of each line (the detail text) is explicitly
 // truncated to what's left of the column, never left to chance.
-func drawMeter(screen tcell.Screen, x, y, width int, m meter) {
+//
+// history is this metric's recent-samples sparkline, drawn bracketed and
+// immediately before the live bar, at the same width (meterBarWidth) so the
+// two read as a matched pair — "trend, then current value." It's only drawn
+// when both non-empty and the meter is actually showing a live bar (the
+// !have and measuring branches below have no bar for it to sit beside, so
+// history is silently ignored there); an empty history (e.g. no history
+// tracked for this metric, or not enough samples yet) leaves it fully
+// omitted rather than drawing empty brackets, so a metric with no trend data
+// takes no extra width instead of a "[]" stub. It's also dropped whenever
+// the column is too narrow to fit both it and the (non-negotiable)
+// percentage text — see the showSpark comment below.
+func drawMeter(screen tcell.Screen, x, y, width int, m meter, history []float64) {
 	switch {
 	case !m.have:
 		text := fmt.Sprintf("%-5s unavailable (%s)", m.label, m.unavailableText)
@@ -130,15 +142,91 @@ func drawMeter(screen tcell.Screen, x, y, width int, m meter) {
 		text := fmt.Sprintf("%-5s measuring...  %s", m.label, m.detail)
 		drawText(screen, x, y, truncateVisible(text, width), tcell.StyleDefault)
 	default:
-		prefix := fmt.Sprintf("%-5s[", m.label)
-		tx := drawText(screen, x, y, prefix, tcell.StyleDefault)
-		barX := drawBar(screen, tx, y, meterBarWidth, m.frac, m.stops)
 		pctPart := fmt.Sprintf("] %s ", m.pctText)
+		// coreWidth is everything except the sparkline: label + bar
+		// brackets/fill + the percentage. sparkWidth is what the sparkline
+		// itself would add. A column too narrow for both (e.g. the ~49-wide
+		// half-columns of a plain 100-col terminal, once two 20-wide bars
+		// are involved) would otherwise push the percentage text past this
+		// column's right edge, where the next column's own drawText calls
+		// silently overwrite it — so the sparkline is dropped first, same as
+		// the !have/measuring branches above already drop it, rather than
+		// let that happen.
+		coreWidth := 5 + 1 + meterBarWidth + len(pctPart)
+		sparkWidth := 1 + meterBarWidth + 2
+		showSpark := len(history) > 0 && width >= coreWidth+sparkWidth
+
+		tx := drawText(screen, x, y, fmt.Sprintf("%-5s", m.label), tcell.StyleDefault)
+		used := 5
+		if showSpark {
+			tx = drawText(screen, tx, y, "[", tcell.StyleDefault)
+			drawSparkline(screen, tx, y, meterBarWidth, history, m.stops)
+			tx += meterBarWidth
+			tx = drawText(screen, tx, y, "] ", tcell.StyleDefault)
+			used += sparkWidth
+		}
+		tx = drawText(screen, tx, y, "[", tcell.StyleDefault)
+		used++
+		barX := drawBar(screen, tx, y, meterBarWidth, m.frac, m.stops)
+		used += meterBarWidth
 		tx = drawText(screen, barX, y, "] ", tcell.StyleDefault)
 		tx = drawText(screen, tx, y, m.pctText, gradientStyle(m.frac, m.stops))
 		tx = drawText(screen, tx, y, " ", tcell.StyleDefault)
-		detailWidth := width - len(prefix) - meterBarWidth - len(pctPart)
+		used += len(pctPart)
+		detailWidth := width - used
 		drawText(screen, tx, y, truncateVisible(m.detail, detailWidth), tcell.StyleDefault)
+	}
+}
+
+// sparkBlocks holds the eight-level sparkline block glyphs (▁ through █).
+// Unlike eighthBlocks (which fracGlyph uses to render a bar's boundary
+// cell, including a true blank for ~0), a sparkline never renders a blank
+// cell for a real sample — the lowest level is ▁, not ' ', so a genuine
+// near-zero sample stays visible as part of the trend line instead of
+// reading as "no data yet."
+var sparkBlocks = [8]rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+
+// sparkGlyph maps one sample's fraction (0..1, clamped) to one of the
+// eight sparkline levels. Deliberately floor, not fracGlyph's
+// round-to-nearest-eighth: a simple step function needs no tie-breaking
+// rule to document or test.
+func sparkGlyph(frac float64) rune {
+	if frac <= 0 {
+		return sparkBlocks[0]
+	}
+	if frac >= 1 {
+		return sparkBlocks[7]
+	}
+	level := int(frac * 8)
+	if level > 7 {
+		level = 7
+	}
+	return sparkBlocks[level]
+}
+
+// drawSparkline renders up to width cells at (x, y), one glyph per sample
+// via sparkGlyph, right-aligned so the most recent sample is always the
+// rightmost cell. When fewer than width samples exist yet (e.g. just
+// after startup or a cgroup switch), the unused leading cells are left
+// blank on emptyBarStyle rather than stretched or centered, so the line
+// visibly fills in from the right over the first few ticks. Each cell is
+// colored independently via gradientStyle(sample, stops) — unlike
+// drawBar's single whole-bar color, showing the trend is the entire
+// point.
+func drawSparkline(screen tcell.Screen, x, y, width int, samples []float64, stops []colorStop) {
+	if width <= 0 {
+		return
+	}
+	pad := width - len(samples)
+	if pad < 0 {
+		samples = samples[len(samples)-width:]
+		pad = 0
+	}
+	for i := 0; i < pad; i++ {
+		screen.SetContent(x+i, y, ' ', nil, emptyBarStyle)
+	}
+	for i, s := range samples {
+		screen.SetContent(x+pad+i, y, sparkGlyph(s), nil, gradientStyle(s, stops))
 	}
 }
 
@@ -259,6 +347,18 @@ type frameData struct {
 	cgroupMeters [3]meter // [meterRAM], [meterCPU], [meterSwap]
 	systemMeters [3]meter
 	cpuInfoLine  string // CPU model + cur/max clockspeed, unchanged content from before, now its own row
+
+	// cgroupRAMHistory/cgroupCPUHistory/systemRAMHistory/systemCPUHistory
+	// are recent frac (0..1) samples, oldest first, for the bracketed
+	// sparkline drawMeter draws beside each RAM/CPU meter's live bar —
+	// sourced from monitorState's sparkHistory buffers by collectFrame so
+	// drawFrame stays a pure function of frameData, never reading state's
+	// sampling fields directly (same separation as the rest of this
+	// struct).
+	cgroupRAMHistory []float64
+	cgroupCPUHistory []float64
+	systemRAMHistory []float64
+	systemCPUHistory []float64
 
 	// cgroupHidden is true when neither RAM nor CPU has a real cgroup limit
 	// (both fell back to host-wide totals) — i.e. boxtop isn't running
@@ -420,10 +520,33 @@ func collectFrame(state *monitorState) (frameData, error) {
 		totalRSSKb += p.RSSKb
 	}
 
+	// Push this tick's already-computed fracs onto the sparkline history
+	// buffers — no new /proc or /sys reads, just recording the same values
+	// the meters above were just built from. Gating on have/!measuring
+	// means a genuinely unavailable or first-tick metric skips this tick's
+	// sample rather than recording a synthetic 0, which would otherwise
+	// show up as a fake dip in the trend.
+	if systemRAM.have {
+		state.systemRAMHistory.push(systemRAM.frac)
+	}
+	if systemCPU.have && !systemCPU.measuring {
+		state.systemCPUHistory.push(systemCPU.frac)
+	}
+	if cgroupRAM.have {
+		state.cgroupRAMHistory.push(cgroupRAM.frac)
+	}
+	if cgroupCPU.have && !cgroupCPU.measuring {
+		state.cgroupCPUHistory.push(cgroupCPU.frac)
+	}
+
 	return frameData{
 		cgroupMeters:      [3]meter{meterRAM: cgroupRAM, meterCPU: cgroupCPU, meterSwap: cgroupSwap},
 		systemMeters:      [3]meter{meterRAM: systemRAM, meterCPU: systemCPU, meterSwap: systemSwap},
 		cpuInfoLine:       cpuInfoLine,
+		cgroupRAMHistory:  state.cgroupRAMHistory.recent(sparkHistoryLen),
+		cgroupCPUHistory:  state.cgroupCPUHistory.recent(sparkHistoryLen),
+		systemRAMHistory:  state.systemRAMHistory.recent(sparkHistoryLen),
+		systemCPUHistory:  state.systemCPUHistory.recent(sparkHistoryLen),
 		cgroupHidden:      cgroupHidden,
 		cgroupName:        cgroupName,
 		cgroupRAMMaxBytes: maxBytes,
@@ -457,6 +580,30 @@ func buildCPUInfoLine(model string, haveModel bool, curMHz, maxMHz float64, have
 	return "CPU: " + strings.Join(parts, "  |  ")
 }
 
+// narrowWidthThreshold is the terminal width below which drawFrame switches
+// from the side-by-side cgroup/system layout to the stacked one (system
+// block below cgroup, both full width) — the same layout --narrow forces
+// unconditionally, since a two-way split under this width leaves each
+// column too cramped for its bar+sparkline+detail text to read cleanly.
+const narrowWidthThreshold = 120
+
+// drawMeterBlock renders one scope's ("cgroup"/"system") bold header row
+// followed by its three RAM/CPU/Swap meter rows, all at the given x/width —
+// shared by drawFrame's cgroupHidden and narrow (stacked) layouts, which
+// each just need one column drawn top-to-bottom, unlike the normal wide
+// layout's side-by-side pair (which interleaves two blocks row-by-row
+// instead, so it draws its own rows directly). Returns the y just past the
+// block, for the next block (or section) to continue from.
+func drawMeterBlock(screen tcell.Screen, x, y, width int, header string, meters [3]meter, histories [3][]float64) int {
+	drawText(screen, x, y, truncateVisible(header, width), tcell.StyleDefault.Bold(true))
+	y++
+	for i := 0; i < 3; i++ {
+		drawMeter(screen, x, y, width, meters[i], histories[i])
+		y++
+	}
+	return y
+}
+
 // drawFrame ports render(): builds one frame's contents into the screen
 // buffer from a frameData snapshot. tcell's Show() diffs this against the
 // previous frame and only writes the changed cells to the terminal, which
@@ -470,27 +617,34 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 
 	maxBytes := data.cgroupRAMMaxBytes
 
-	// dividerCol starts the system column at the horizontal midpoint of the
-	// terminal so it scales with width, rather than a fixed offset.
-	dividerCol := w / 2
+	// narrow stacks the cgroup block above the system block (both full
+	// width) instead of splitting them side by side — forced by --narrow
+	// (state.forceNarrow) or triggered automatically once the terminal gets
+	// too tight for a two-column split to stay readable.
+	narrow := state.forceNarrow || w < narrowWidthThreshold
 
 	y := 0
 
-	if data.cgroupHidden {
+	cgroupHeader := "cgroup"
+	if data.cgroupName != "" {
+		cgroupHeader = fmt.Sprintf("cgroup (%s)", data.cgroupName)
+	}
+	cgroupHistories := [3][]float64{meterRAM: data.cgroupRAMHistory, meterCPU: data.cgroupCPUHistory}
+	systemHistories := [3][]float64{meterRAM: data.systemRAMHistory, meterCPU: data.systemCPUHistory}
+
+	switch {
+	case data.cgroupHidden:
 		// No meaningful cgroup confinement detected (see the cgroupHidden
 		// field comment) — system gets the full row width instead of the
 		// usual half, and there's no cgroup column to label.
-		drawText(screen, 0, y, "system", tcell.StyleDefault.Bold(true))
-		y++
-		for i := 0; i < 3; i++ {
-			drawMeter(screen, 0, y, w, data.systemMeters[i])
-			y++
-		}
-	} else {
-		cgroupHeader := "cgroup"
-		if data.cgroupName != "" {
-			cgroupHeader = fmt.Sprintf("cgroup (%s)", data.cgroupName)
-		}
+		y = drawMeterBlock(screen, 0, y, w, "system", data.systemMeters, systemHistories)
+	case narrow:
+		y = drawMeterBlock(screen, 0, y, w, cgroupHeader, data.cgroupMeters, cgroupHistories)
+		y = drawMeterBlock(screen, 0, y, w, "system", data.systemMeters, systemHistories)
+	default:
+		// dividerCol starts the system column at the horizontal midpoint of
+		// the terminal so it scales with width, rather than a fixed offset.
+		dividerCol := w / 2
 		drawText(screen, 0, y, truncateVisible(cgroupHeader, dividerCol-1), tcell.StyleDefault.Bold(true))
 		drawText(screen, dividerCol, y, "system", tcell.StyleDefault.Bold(true))
 		y++
@@ -498,8 +652,8 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		for i := 0; i < 3; i++ {
 			// dividerCol-1 leaves a one-column gap so a truncated cgroup detail
 			// text never butts directly up against the system column's label.
-			drawMeter(screen, 0, y, dividerCol-1, data.cgroupMeters[i])
-			drawMeter(screen, dividerCol, y, w-dividerCol, data.systemMeters[i])
+			drawMeter(screen, 0, y, dividerCol-1, data.cgroupMeters[i], cgroupHistories[i])
+			drawMeter(screen, dividerCol, y, w-dividerCol, data.systemMeters[i], systemHistories[i])
 			y++
 		}
 	}

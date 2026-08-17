@@ -480,6 +480,8 @@ func TestApplyCgroupSelection(t *testing.T) {
 	s.cgroupSelectMode = true
 	s.cgroupCPUHasBaseline = true
 	s.cgroupCPUPrevUsageUsec = 12345
+	s.cgroupRAMHistory.push(0.5)
+	s.cgroupCPUHistory.push(0.5)
 
 	s.cgroupSelectCursor = 2 // "system.slice/foo.service"
 	s.applyCgroupSelection()
@@ -496,6 +498,9 @@ func TestApplyCgroupSelection(t *testing.T) {
 	if s.cgroupCPUHasBaseline || s.cgroupCPUPrevUsageUsec != 0 {
 		t.Error("applyCgroupSelection did not reset the cgroup CPU baseline")
 	}
+	if len(s.cgroupRAMHistory.recent(1)) != 0 || len(s.cgroupCPUHistory.recent(1)) != 0 {
+		t.Error("applyCgroupSelection did not reset the cgroup sparkline history")
+	}
 	if s.statusMsg == "" {
 		t.Error("applyCgroupSelection left statusMsg empty")
 	}
@@ -506,6 +511,62 @@ func TestApplyCgroupSelection(t *testing.T) {
 	s.applyCgroupSelection()
 	if cgroupSuffix != "" {
 		t.Errorf("cgroupSuffix after selecting default entry = %q, want \"\"", cgroupSuffix)
+	}
+}
+
+func TestSparkHistoryPushCapsAndSlides(t *testing.T) {
+	var h sparkHistory
+	for i := 0; i < sparkHistoryLen+5; i++ {
+		h.push(float64(i))
+	}
+	got := h.recent(sparkHistoryLen)
+	if len(got) != sparkHistoryLen {
+		t.Fatalf("len(recent(%d)) = %d, want %d", sparkHistoryLen, len(got), sparkHistoryLen)
+	}
+	// The first 5 pushes (0..4) should have been dropped, so the oldest
+	// surviving sample is 5 and the newest is sparkHistoryLen+4.
+	if got[0] != 5 {
+		t.Errorf("got[0] = %v, want 5 (oldest sample should have slid out)", got[0])
+	}
+	if want := float64(sparkHistoryLen + 4); got[len(got)-1] != want {
+		t.Errorf("got[last] = %v, want %v", got[len(got)-1], want)
+	}
+}
+
+func TestSparkHistoryRecentFewerThanCap(t *testing.T) {
+	var h sparkHistory
+	h.push(0.1)
+	h.push(0.2)
+	h.push(0.3)
+	got := h.recent(10)
+	want := []float64{0.1, 0.2, 0.3}
+	if len(got) != len(want) {
+		t.Fatalf("recent(10) = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("recent(10)[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSparkHistoryRecentIsACopy(t *testing.T) {
+	var h sparkHistory
+	h.push(0.5)
+	got := h.recent(1)
+	got[0] = 99
+	if h.samples[0] == 99 {
+		t.Error("recent() returned a slice aliasing the live buffer, not a copy")
+	}
+}
+
+func TestSparkHistoryReset(t *testing.T) {
+	var h sparkHistory
+	h.push(0.1)
+	h.push(0.2)
+	h.reset()
+	if got := h.recent(10); len(got) != 0 {
+		t.Errorf("recent(10) after reset = %v, want empty", got)
 	}
 }
 

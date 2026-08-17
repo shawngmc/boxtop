@@ -52,7 +52,11 @@ func nonInteractiveWidth() int {
 // use of procCPUPrev), so the first collectFrame call only plants that
 // baseline; after waiting one tick, the second call has a real delta to
 // report and its result is what gets printed.
-func runNonInteractive(interval time.Duration, initialFilter string) error {
+// forceNarrow is accepted for signature parity with run() (see main.go's
+// runFn) but unused here: the plain-text output already always prints
+// cgroup and system as separate stacked sections (see writeMeter's doc
+// comment), so there's no side-by-side layout for --narrow to affect.
+func runNonInteractive(interval time.Duration, initialFilter string, forceNarrow bool) error {
 	state := newMonitorState()
 	state.filterQuery = initialFilter
 

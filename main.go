@@ -20,11 +20,12 @@ import (
 var version = "dev"
 
 func main() {
-	var colorblind, showVersion, nonInteractive, listCgroupsFlag bool
+	var colorblind, showVersion, nonInteractive, listCgroupsFlag, narrow bool
 	var filter, cgroupOverride string
 	flag.BoolVar(&colorblind, "colorblind", false, "use the colorblind-friendly palette")
 	flag.BoolVar(&colorblind, "c", false, "shorthand for --colorblind")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.BoolVar(&narrow, "narrow", false, "force the stacked cgroup/system top-bar layout (system block below cgroup) instead of side-by-side — automatic below 120 columns wide regardless of this flag")
 	flag.StringVar(&filter, "filter", "", "start with an incremental process filter already applied (same as pressing '/', typing, then Enter)")
 	flag.StringVar(&filter, "f", "", "shorthand for --filter")
 	flag.BoolVar(&nonInteractive, "non-interactive", false, "skip the interactive TUI: wait one refresh_interval_seconds tick, then print one snapshot (header, full process list, simplified footer) and exit. Auto-enabled when stdin or stdout isn't a terminal (piped/redirected).")
@@ -85,13 +86,13 @@ func main() {
 	if nonInteractive {
 		runFn = runNonInteractive
 	}
-	if err := runFn(interval, filter); err != nil {
+	if err := runFn(interval, filter, narrow); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 }
 
-func run(interval time.Duration, initialFilter string) error {
+func run(interval time.Duration, initialFilter string, forceNarrow bool) error {
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		return err
@@ -112,6 +113,7 @@ func run(interval time.Duration, initialFilter string) error {
 
 	state := newMonitorState()
 	state.filterQuery = initialFilter
+	state.forceNarrow = forceNarrow
 
 	events := make(chan tcell.Event, 8)
 	quit := make(chan struct{})

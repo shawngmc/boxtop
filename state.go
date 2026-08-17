@@ -34,6 +34,51 @@ var sortDefaultReverse = map[sortColumn]bool{
 	sortName: false,
 }
 
+// sparkHistoryLen is the number of samples retained per metric's sparkline
+// history buffer — decoupled from the sparkline's on-screen width, so a
+// wide terminal shows more of the same underlying trend and a narrow one
+// just shows the most recent slice of it, rather than the buffer itself
+// growing or shrinking on every resize. At the default 1s refresh tick,
+// 120 samples is 2 minutes of trend.
+const sparkHistoryLen = 120
+
+// sparkHistory is a fixed-capacity trend buffer of the last
+// sparkHistoryLen frac samples (0..1) for one metric (e.g. cgroup RAM%).
+// Implemented as a slide-and-trim slice rather than an index-wrapped ring:
+// push is O(1) amortized (an O(N) copy only on the rare tick where it's
+// over cap, negligible at N=120 and one push per second), and recent/reset
+// need no wrap-around index arithmetic to get right or test.
+type sparkHistory struct {
+	samples []float64
+}
+
+// push appends one new sample, dropping the oldest once len exceeds
+// sparkHistoryLen.
+func (h *sparkHistory) push(frac float64) {
+	h.samples = append(h.samples, frac)
+	if len(h.samples) > sparkHistoryLen {
+		h.samples = h.samples[len(h.samples)-sparkHistoryLen:]
+	}
+}
+
+// recent returns a copy of up to the n most recent samples, oldest first —
+// a copy (not a subslice of the live backing array) so a frameData
+// snapshot holding the result can never be mutated by a later push.
+func (h *sparkHistory) recent(n int) []float64 {
+	samples := h.samples
+	if len(samples) > n {
+		samples = samples[len(samples)-n:]
+	}
+	out := make([]float64, len(samples))
+	copy(out, samples)
+	return out
+}
+
+// reset empties the buffer, e.g. when the cgroup picker switches targets.
+func (h *sparkHistory) reset() {
+	h.samples = h.samples[:0]
+}
+
 // monitorState replaces the Python version's module-level globals
 // (sort_column, sort_reverse, scroll_offset, _last_page_size,
 // _proc_cpu_prev, _cpu_prev_usage_usec, _cpu_prev_time) with an explicit
@@ -62,6 +107,12 @@ type monitorState struct {
 	// editing the same text, and is cleared on Esc.
 	filterMode  bool
 	filterQuery string
+
+	// forceNarrow is set once at startup from the --narrow flag. drawFrame
+	// ORs it with its own width check (see narrowWidthThreshold) rather than
+	// using it in place of that check, so --narrow only ever widens when the
+	// stacked cgroup/system layout applies, never narrows it.
+	forceNarrow bool
 
 	// cursor is the highlighted row's absolute index into currentProcs (the
 	// current sorted+filtered process list) — a real selection, independent
@@ -135,6 +186,18 @@ type monitorState struct {
 	// result is a ratio of two /proc/stat deltas, not a rate.
 	hostCPUPrev        hostCPUSample
 	hostCPUHasBaseline bool
+
+	// cgroupRAMHistory/cgroupCPUHistory/systemRAMHistory/systemCPUHistory
+	// are the sparkline row's trend buffers, appended to once per
+	// collectFrame call using the same frac values already computed there
+	// for the bar meters (see collectFrame's push calls just before its
+	// return statement) — no extra /proc or /sys reads. cgroupRAMHistory
+	// and cgroupCPUHistory are reset by applyCgroupSelection, since a new
+	// monitoring target's history has nothing to do with the old one's.
+	cgroupRAMHistory sparkHistory
+	cgroupCPUHistory sparkHistory
+	systemRAMHistory sparkHistory
+	systemCPUHistory sparkHistory
 
 	// Header click targets, recorded by drawFrame each frame so mouse clicks
 	// map to the same columns that were actually rendered (rather than
@@ -598,9 +661,10 @@ func (s *monitorState) cgroupSelectEnd() {
 // listCgroups(). Resets the cgroup CPU-sampling baseline, since
 // usage_usec/time from the old target has nothing to do with the new
 // one's counters — carrying it over would produce a bogus (possibly
-// negative) CPU% on the very next sample. cgroupChangePending tells the
-// run loop to re-poll immediately rather than leaving stale meters up
-// until the next tick.
+// negative) CPU% on the very next sample. Also resets the cgroup sparkline
+// history for the same reason: the old target's RAM/CPU trend says nothing
+// about the new one's. cgroupChangePending tells the run loop to re-poll
+// immediately rather than leaving stale meters up until the next tick.
 func (s *monitorState) applyCgroupSelection() {
 	names := s.cgroupSelectDisplayNames()
 	if s.cgroupSelectCursor < 0 || s.cgroupSelectCursor >= len(names) {
@@ -616,6 +680,8 @@ func (s *monitorState) applyCgroupSelection() {
 	}
 	s.cgroupCPUHasBaseline = false
 	s.cgroupCPUPrevUsageUsec = 0
+	s.cgroupRAMHistory.reset()
+	s.cgroupCPUHistory.reset()
 	s.cgroupSelectMode = false
 	s.cgroupChangePending = true
 }

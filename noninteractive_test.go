@@ -118,6 +118,29 @@ func TestWriteNonInteractiveFrameShowsCgroupName(t *testing.T) {
 	}
 }
 
+func TestWriteNonInteractiveFrameOmitsSparkline(t *testing.T) {
+	state := newMonitorState()
+	data := testFrameData(nil)
+	data.cgroupRAMHistory = []float64{0.1, 0.5, 0.9}
+	data.cgroupCPUHistory = []float64{0.1, 0.5, 0.9}
+	data.systemRAMHistory = []float64{0.1, 0.5, 0.9}
+	data.systemCPUHistory = []float64{0.1, 0.5, 0.9}
+
+	var buf strings.Builder
+	writeNonInteractiveFrame(&buf, state, data, 100)
+	out := buf.String()
+
+	// sparkBlocks' last glyph, '█', is also plainBar's ordinary "filled bar
+	// cell" character, so it's expected to appear regardless — only the
+	// other seven levels are unique to the sparkline and would prove it
+	// leaked into plain-text output.
+	for _, r := range sparkBlocks[:len(sparkBlocks)-1] {
+		if strings.ContainsRune(out, r) {
+			t.Errorf("non-interactive output contains sparkline glyph %q; a one/two-sample snapshot has no usable trend to print", r)
+		}
+	}
+}
+
 func TestPlainBar(t *testing.T) {
 	tests := []struct {
 		frac float64

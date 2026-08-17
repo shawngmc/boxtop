@@ -123,7 +123,10 @@ func TestDrawFrameAutoScrollsCursorIntoView(t *testing.T) {
 		procs[i] = Process{PID: i + 1, Name: name, NameLower: name, Cmd: name}
 	}
 
-	screen := newTestScreen(t, 80, 12) // short terminal: only a few process rows fit
+	// Width stays >= narrowWidthThreshold so the top bar keeps its compact
+	// side-by-side layout — this test is about vertical auto-scroll in a
+	// short terminal, not the narrow stacked layout (covered separately).
+	screen := newTestScreen(t, 120, 12) // short terminal: only a few process rows fit
 	state := newMonitorState()
 	state.sortCol = sortPID
 	state.sortReverse = false
@@ -402,6 +405,27 @@ func TestFracGlyph(t *testing.T) {
 	}
 }
 
+func TestSparkGlyph(t *testing.T) {
+	tests := []struct {
+		frac float64
+		want rune
+	}{
+		{-0.1, '▁'},
+		{0, '▁'},
+		{0.05, '▁'},
+		{0.13, '▂'},
+		{0.5, '▅'},
+		{0.99, '█'},
+		{1, '█'},
+		{1.5, '█'},
+	}
+	for _, tc := range tests {
+		if got := sparkGlyph(tc.frac); got != tc.want {
+			t.Errorf("sparkGlyph(%v) = %q, want %q", tc.frac, got, tc.want)
+		}
+	}
+}
+
 func TestDrawBarPartialCell(t *testing.T) {
 	screen := newTestScreen(t, 20, 1)
 	drawBar(screen, 0, 0, 10, 0.55, summaryStops)
@@ -428,7 +452,7 @@ func TestDrawBarPartialCell(t *testing.T) {
 func TestDrawMeterBracketsUncolored(t *testing.T) {
 	screen := newTestScreen(t, 40, 1)
 	m := memMeter("RAM", 512*1024*1024, 1024*1024*1024, "")
-	drawMeter(screen, 0, 0, 40, m)
+	drawMeter(screen, 0, 0, 40, m, nil)
 
 	row := []rune(rowText(screen, 40, 0))
 	openIdx, closeIdx := -1, -1
@@ -457,6 +481,127 @@ func TestDrawMeterBracketsUncolored(t *testing.T) {
 	_, _, pctStyle, _ := screen.GetContent(pctIdx, 0)
 	if fg, _, _ := pctStyle.Decompose(); fg == tcell.ColorDefault {
 		t.Error("percentage text has no distinct gradient foreground color")
+	}
+}
+
+func TestDrawSparklineColorsPerSample(t *testing.T) {
+	screen := newTestScreen(t, 6, 1)
+	samples := []float64{0, 1}
+	drawSparkline(screen, 0, 0, 5, samples, summaryStops)
+
+	// Only 2 of the 5 requested cells have samples, so the sparkline
+	// right-aligns them: 3 blank padding cells, then the two samples.
+	for x := 0; x < 3; x++ {
+		r, _, style, _ := screen.GetContent(x, 0)
+		if r != ' ' || style != emptyBarStyle {
+			t.Errorf("padding cell %d = %q/%v, want blank/emptyBarStyle", x, r, style)
+		}
+	}
+
+	r, _, style, _ := screen.GetContent(3, 0)
+	if r != '▁' {
+		t.Errorf("first sample glyph = %q, want '▁' (frac 0)", r)
+	}
+	if fg, _, _ := style.Decompose(); fg == tcell.ColorDefault {
+		t.Error("first sample cell has no distinct gradient foreground color")
+	}
+
+	r, _, style, _ = screen.GetContent(4, 0)
+	if r != '█' {
+		t.Errorf("second sample glyph = %q, want '█' (frac 1)", r)
+	}
+	if fg, _, _ := style.Decompose(); fg == tcell.ColorDefault {
+		t.Error("second sample cell has no distinct gradient foreground color")
+	}
+}
+
+func TestDrawSparklineMostRecentSampleIsRightmost(t *testing.T) {
+	screen := newTestScreen(t, 3, 1)
+	// More samples than the available width: only the most recent 3
+	// should be drawn, oldest-first left to right, newest at the right.
+	samples := []float64{0, 0.5, 0.99, 1}
+	drawSparkline(screen, 0, 0, 3, samples, summaryStops)
+
+	got := rowText(screen, 3, 0)
+	want := string([]rune{sparkGlyph(0.5), sparkGlyph(0.99), sparkGlyph(1)})
+	if got != want {
+		t.Errorf("drawSparkline row = %q, want %q (dropped the oldest sample, kept newest rightmost)", got, want)
+	}
+}
+
+// TestDrawMeterSparklineBesideBar covers the sparkline's placement when a
+// meter is drawn with history: bracketed, meterBarWidth wide, immediately
+// before the live bar's own brackets, at the same width — "trend, then
+// current value," both readable at a glance without a separate row.
+func TestDrawMeterSparklineBesideBar(t *testing.T) {
+	screen := newTestScreen(t, 60, 1)
+	m := memMeter("RAM", 512*1024*1024, 1024*1024*1024, "")
+	hist := []float64{0.2, 0.4, 0.6}
+	drawMeter(screen, 0, 0, 60, m, hist)
+
+	row := []rune(rowText(screen, 60, 0))
+	var brackets []int
+	for i, r := range row {
+		if r == '[' || r == ']' {
+			brackets = append(brackets, i)
+		}
+	}
+	if len(brackets) != 4 {
+		t.Fatalf("meter row %q has %d bracket chars, want 4 (sparkline + bar)", string(row), len(brackets))
+	}
+	sparkOpen, sparkClose, barOpen, barClose := brackets[0], brackets[1], brackets[2], brackets[3]
+	if sparkClose-sparkOpen-1 != meterBarWidth {
+		t.Errorf("sparkline bracket span = %d, want meterBarWidth (%d)", sparkClose-sparkOpen-1, meterBarWidth)
+	}
+	if barClose-barOpen-1 != meterBarWidth {
+		t.Errorf("bar bracket span = %d, want meterBarWidth (%d)", barClose-barOpen-1, meterBarWidth)
+	}
+	if barOpen <= sparkClose {
+		t.Errorf("live bar brackets (open at %d) should come after the sparkline brackets (close at %d)", barOpen, sparkClose)
+	}
+}
+
+// TestDrawMeterOmitsSparklineWhenHistoryEmpty covers the "fully hidden if
+// unavailable" requirement: with no history samples, no sparkline brackets
+// are drawn at all (not even an empty "[]" stub), so the row is exactly what
+// it was before the sparkline feature existed.
+func TestDrawMeterOmitsSparklineWhenHistoryEmpty(t *testing.T) {
+	screen := newTestScreen(t, 60, 1)
+	m := memMeter("RAM", 512*1024*1024, 1024*1024*1024, "")
+	drawMeter(screen, 0, 0, 60, m, nil)
+
+	row := []rune(rowText(screen, 60, 0))
+	brackets := 0
+	for _, r := range row {
+		if r == '[' || r == ']' {
+			brackets++
+		}
+	}
+	if brackets != 2 {
+		t.Errorf("meter row %q has %d bracket chars, want 2 (bar only, no sparkline)", string(row), brackets)
+	}
+}
+
+// TestDrawMeterHidesSparklineWhenColumnTooNarrow covers the regression this
+// guards against: on a plain 100-col terminal the cgroup/system split gives
+// each column only ~49 cells, too narrow for a 20-wide sparkline plus a
+// 20-wide bar plus the percentage text. Without this guard, the percentage
+// would be pushed past the column's right edge and silently overwritten by
+// the next column's own drawing — so instead the sparkline is dropped and
+// the percentage always stays visible.
+func TestDrawMeterHidesSparklineWhenColumnTooNarrow(t *testing.T) {
+	screen := newTestScreen(t, 49, 1)
+	m := memMeter("RAM", 512*1024*1024, 1024*1024*1024, "")
+	hist := []float64{0.2, 0.4, 0.6}
+	drawMeter(screen, 0, 0, 49, m, hist)
+
+	row := rowText(screen, 49, 0)
+	if strings.ContainsRune(row, '▂') || strings.ContainsRune(row, '▃') ||
+		strings.ContainsRune(row, '▄') || strings.ContainsRune(row, '▅') {
+		t.Errorf("meter row %q drew a sparkline despite too-narrow column", row)
+	}
+	if !strings.Contains(row, "50.0%") {
+		t.Errorf("meter row %q missing the percentage text, want it always visible even when narrow", row)
 	}
 }
 
@@ -553,6 +698,141 @@ func TestDrawFrameShowsCgroupAndSystemMeters(t *testing.T) {
 	}
 }
 
+// TestDrawFrameSideBySideAboveWidthThreshold covers the default wide-
+// terminal layout: cgroup and system headers land on the same row, split
+// left/right at the midpoint.
+func TestDrawFrameSideBySideAboveWidthThreshold(t *testing.T) {
+	screen := newTestScreen(t, 140, 24)
+	state := newMonitorState()
+	drawFrame(screen, state, testFrameData(nil))
+
+	w, h := screen.Size()
+	cgroupY, ok := findRow(screen, w, h, "cgroup")
+	if !ok {
+		t.Fatal("top bar missing the \"cgroup\" column header")
+	}
+	systemY, ok := findRow(screen, w, h, "system")
+	if !ok {
+		t.Fatal("top bar missing the \"system\" column header")
+	}
+	if cgroupY != systemY {
+		t.Errorf("cgroup header row %d, system header row %d, want the same row (side by side) at width %d", cgroupY, systemY, w)
+	}
+}
+
+// TestDrawFrameStacksBelowWidthThreshold covers the auto-narrow trigger:
+// under narrowWidthThreshold columns, the system block moves below the
+// cgroup block (both full width) instead of splitting the row in half.
+func TestDrawFrameStacksBelowWidthThreshold(t *testing.T) {
+	screen := newTestScreen(t, narrowWidthThreshold-1, 24)
+	state := newMonitorState()
+	drawFrame(screen, state, testFrameData(nil))
+
+	w, h := screen.Size()
+	cgroupY, ok := findRow(screen, w, h, "cgroup")
+	if !ok {
+		t.Fatal("top bar missing the \"cgroup\" column header")
+	}
+	systemY, ok := findRow(screen, w, h, "system")
+	if !ok {
+		t.Fatal("top bar missing the \"system\" column header")
+	}
+	// cgroup's header + 3 meter rows (RAM/CPU/SWAP) come first, so system's
+	// header lands exactly 4 rows below cgroup's.
+	if want := cgroupY + 4; systemY != want {
+		t.Errorf("system header row = %d, want %d (stacked 4 rows below cgroup's at width %d)", systemY, want, w)
+	}
+}
+
+// TestDrawFrameForceNarrowStacksEvenWhenWide covers --narrow: it stacks the
+// layout even on a terminal wide enough for the side-by-side split.
+func TestDrawFrameForceNarrowStacksEvenWhenWide(t *testing.T) {
+	screen := newTestScreen(t, 200, 24)
+	state := newMonitorState()
+	state.forceNarrow = true
+	drawFrame(screen, state, testFrameData(nil))
+
+	w, h := screen.Size()
+	cgroupY, ok := findRow(screen, w, h, "cgroup")
+	if !ok {
+		t.Fatal("top bar missing the \"cgroup\" column header")
+	}
+	systemY, ok := findRow(screen, w, h, "system")
+	if !ok {
+		t.Fatal("top bar missing the \"system\" column header")
+	}
+	if want := cgroupY + 4; systemY != want {
+		t.Errorf("system header row = %d, want %d (--narrow should stack even at width %d)", systemY, want, w)
+	}
+}
+
+// TestDrawFrameShowsSparklinesBesideMeters covers the sparkline restructure:
+// RAM/CPU history is drawn inline on each meter's own row (bracketed, beside
+// the live bar) rather than on a separate row below the three meters. Uses a
+// wide screen so each split column comfortably fits both bracketed bars —
+// see TestDrawMeterHidesSparklineWhenColumnTooNarrow for the narrower case.
+func TestDrawFrameShowsSparklinesBesideMeters(t *testing.T) {
+	screen := newTestScreen(t, 160, 24)
+	state := newMonitorState()
+	data := testFrameData(nil)
+	data.cgroupRAMHistory = []float64{0.2, 0.4, 0.6}
+	data.cgroupCPUHistory = []float64{0.2, 0.4, 0.6}
+	data.systemRAMHistory = []float64{0.2, 0.4, 0.6}
+	data.systemCPUHistory = []float64{0.2, 0.4, 0.6}
+	drawFrame(screen, state, data)
+
+	w, h := screen.Size()
+	y, ok := findRow(screen, w, h, "RAM")
+	if !ok {
+		t.Fatal("top bar missing the RAM meter row")
+	}
+	row := rowText(screen, w, y)
+	if !strings.ContainsRune(row, '▂') && !strings.ContainsRune(row, '▃') &&
+		!strings.ContainsRune(row, '▄') && !strings.ContainsRune(row, '▅') {
+		t.Errorf("RAM meter row %q has no sparkline glyph for the populated samples", row)
+	}
+	// header(y-1), RAM(y), CPU(y+1), SWAP(y+2), cpuInfo(y+3), "=" rule
+	// (y+4) — confirming the rule lands exactly there (not one row lower)
+	// shows no leftover history row was inserted between the meters and it.
+	if got := rowText(screen, w, y+4); !strings.HasPrefix(got, "=") {
+		t.Errorf("\"=\" separator rule row = %q, want it to start with \"=\" at row %d (no stray row between meters and it)", got, y+4)
+	}
+}
+
+// TestDrawFrameHidesCgroupHistoryWhenUnconfined mirrors
+// TestDrawFrameHidesCgroupSectionWhenUnconfined for the sparklines: when
+// there's no meaningful cgroup confinement, only the full-width system RAM
+// row should carry a sparkline, not a cgroup-side one too.
+func TestDrawFrameHidesCgroupHistoryWhenUnconfined(t *testing.T) {
+	screen := newTestScreen(t, 100, 24)
+	state := newMonitorState()
+	data := testFrameData(nil)
+	data.cgroupHidden = true
+	data.systemMeters[meterRAM] = memMeter("RAM", 50*1024*1024, 100*1024*1024, "")
+	data.systemRAMHistory = []float64{0.2, 0.4, 0.6}
+	data.systemCPUHistory = []float64{0.2, 0.4, 0.6}
+	drawFrame(screen, state, data)
+
+	w, h := screen.Size()
+	y, ok := findRow(screen, w, h, "RAM")
+	if !ok {
+		t.Fatal("top bar missing the RAM meter row")
+	}
+	row := rowText(screen, w, y)
+	if !strings.ContainsRune(row, '▂') && !strings.ContainsRune(row, '▃') &&
+		!strings.ContainsRune(row, '▄') && !strings.ContainsRune(row, '▅') {
+		t.Errorf("RAM meter row %q has no sparkline glyph for the populated samples", row)
+	}
+	// Only the single (system) RAM row should exist — cgroupHidden means
+	// there's no cgroup column at all to carry a second sparkline.
+	for y2 := y + 1; y2 < h; y2++ {
+		if strings.Contains(rowText(screen, w, y2), "RAM") {
+			t.Error("found an unexpected second RAM meter row when cgroupHidden is set")
+			break
+		}
+	}
+}
+
 // TestDrawFrameHidesCgroupSectionWhenUnconfined covers the fix for the case
 // where boxtop isn't running under any real cgroup confinement (bare host,
 // no container, no systemd resource limits): rather than show a "cgroup"
@@ -592,5 +872,51 @@ func TestDrawFrameShowsCgroupName(t *testing.T) {
 	w, h := screen.Size()
 	if _, ok := findRow(screen, w, h, "cgroup (docker/1a2b3c4d5e6f)"); !ok {
 		t.Error("top bar missing the cgroup name label")
+	}
+}
+
+// TestCollectFrameAppendsSystemRAMHistory documents that collectFrame feeds
+// the sparkline history buffers, once per call, from the same values it
+// computes for the bar meters — /proc/meminfo is always readable on a
+// Linux test host, so systemRAMHistory should grow by exactly one sample
+// per call with no gating.
+func TestCollectFrameAppendsSystemRAMHistory(t *testing.T) {
+	state := newMonitorState()
+
+	if _, err := collectFrame(state); err != nil {
+		t.Fatalf("collectFrame: %v", err)
+	}
+	if got := len(state.systemRAMHistory.recent(sparkHistoryLen)); got != 1 {
+		t.Fatalf("systemRAMHistory length after 1st collectFrame = %d, want 1", got)
+	}
+
+	if _, err := collectFrame(state); err != nil {
+		t.Fatalf("collectFrame: %v", err)
+	}
+	if got := len(state.systemRAMHistory.recent(sparkHistoryLen)); got != 2 {
+		t.Errorf("systemRAMHistory length after 2nd collectFrame = %d, want 2", got)
+	}
+}
+
+// TestCollectFrameGatesCPUHistoryOnBaseline documents the deliberate gap in
+// systemCPUHistory: sampleHostCPUPct returns no percentage on its first
+// call (no baseline yet, see TestSampleHostCPUPctBaseline in
+// state_test.go), so collectFrame must skip that tick's push rather than
+// record a synthetic 0 — a fake dip that isn't a real sample.
+func TestCollectFrameGatesCPUHistoryOnBaseline(t *testing.T) {
+	state := newMonitorState()
+
+	if _, err := collectFrame(state); err != nil {
+		t.Fatalf("collectFrame: %v", err)
+	}
+	if got := len(state.systemCPUHistory.recent(sparkHistoryLen)); got != 0 {
+		t.Errorf("systemCPUHistory length after 1st collectFrame = %d, want 0 (no baseline yet)", got)
+	}
+
+	if _, err := collectFrame(state); err != nil {
+		t.Fatalf("collectFrame: %v", err)
+	}
+	if got := len(state.systemCPUHistory.recent(sparkHistoryLen)); got != 1 {
+		t.Errorf("systemCPUHistory length after 2nd collectFrame = %d, want 1", got)
 	}
 }
