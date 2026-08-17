@@ -394,6 +394,121 @@ func TestStartDetailView(t *testing.T) {
 	}
 }
 
+func TestCgroupSelectDisplayNamesFilter(t *testing.T) {
+	s := newMonitorState()
+	s.cgroupSelectAll = []string{"docker/1a2b3c", "system.slice/foo.service", "system.slice/bar.service"}
+
+	names := s.cgroupSelectDisplayNames()
+	if len(names) != 4 || names[0] != cgroupSelectDefaultLabel {
+		t.Fatalf("cgroupSelectDisplayNames() with no filter = %v, want default entry + all 3", names)
+	}
+
+	s.cgroupSelectFilter = "SYSTEM.SLICE"
+	names = s.cgroupSelectDisplayNames()
+	want := []string{cgroupSelectDefaultLabel, "system.slice/foo.service", "system.slice/bar.service"}
+	if len(names) != len(want) {
+		t.Fatalf("cgroupSelectDisplayNames() with filter = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Errorf("cgroupSelectDisplayNames()[%d] = %q, want %q", i, names[i], want[i])
+		}
+	}
+}
+
+func TestCgroupSelectEditingResetsCursor(t *testing.T) {
+	s := newMonitorState()
+	s.cgroupSelectAll = []string{"docker/1a2b3c", "docker/4d5e6f"}
+	s.cgroupSelectCursor = 2
+	s.cgroupSelectScroll = 1
+
+	s.cgroupSelectAppendRune('d')
+	if s.cgroupSelectCursor != 0 || s.cgroupSelectScroll != 0 {
+		t.Errorf("cgroupSelectAppendRune left cursor=%d scroll=%d, want 0, 0", s.cgroupSelectCursor, s.cgroupSelectScroll)
+	}
+	if s.cgroupSelectFilter != "d" {
+		t.Errorf("cgroupSelectFilter = %q, want \"d\"", s.cgroupSelectFilter)
+	}
+
+	s.cgroupSelectCursor = 1
+	s.cgroupSelectBackspace()
+	if s.cgroupSelectFilter != "" {
+		t.Errorf("cgroupSelectFilter after backspace = %q, want \"\"", s.cgroupSelectFilter)
+	}
+	if s.cgroupSelectCursor != 0 {
+		t.Errorf("cgroupSelectCursor after backspace = %d, want 0", s.cgroupSelectCursor)
+	}
+
+	// Backspace on an already-empty filter is a no-op, not a panic.
+	s.cgroupSelectBackspace()
+	if s.cgroupSelectFilter != "" {
+		t.Errorf("cgroupSelectFilter after backspace-on-empty = %q, want \"\"", s.cgroupSelectFilter)
+	}
+}
+
+func TestCgroupSelectMoveClamps(t *testing.T) {
+	s := newMonitorState()
+	s.cgroupSelectAll = []string{"docker/1a2b3c", "docker/4d5e6f"} // + default entry = 3 rows
+
+	s.cgroupSelectMove(-5)
+	if s.cgroupSelectCursor != 0 {
+		t.Errorf("cgroupSelectMove(-5) from 0 = %d, want 0", s.cgroupSelectCursor)
+	}
+
+	s.cgroupSelectMove(5)
+	if s.cgroupSelectCursor != 2 {
+		t.Errorf("cgroupSelectMove(5) = %d, want 2 (last row)", s.cgroupSelectCursor)
+	}
+
+	s.cgroupSelectHome()
+	if s.cgroupSelectCursor != 0 {
+		t.Errorf("cgroupSelectHome() = %d, want 0", s.cgroupSelectCursor)
+	}
+
+	s.cgroupSelectEnd()
+	if s.cgroupSelectCursor != 2 {
+		t.Errorf("cgroupSelectEnd() = %d, want 2", s.cgroupSelectCursor)
+	}
+}
+
+func TestApplyCgroupSelection(t *testing.T) {
+	old := cgroupSuffix
+	defer func() { cgroupSuffix = old }()
+
+	s := newMonitorState()
+	s.cgroupSelectAll = []string{"docker/1a2b3c", "system.slice/foo.service"}
+	s.cgroupSelectMode = true
+	s.cgroupCPUHasBaseline = true
+	s.cgroupCPUPrevUsageUsec = 12345
+
+	s.cgroupSelectCursor = 2 // "system.slice/foo.service"
+	s.applyCgroupSelection()
+
+	if cgroupSuffix != "system.slice/foo.service" {
+		t.Errorf("cgroupSuffix = %q, want \"system.slice/foo.service\"", cgroupSuffix)
+	}
+	if s.cgroupSelectMode {
+		t.Error("applyCgroupSelection did not close the picker")
+	}
+	if !s.cgroupChangePending {
+		t.Error("applyCgroupSelection did not set cgroupChangePending")
+	}
+	if s.cgroupCPUHasBaseline || s.cgroupCPUPrevUsageUsec != 0 {
+		t.Error("applyCgroupSelection did not reset the cgroup CPU baseline")
+	}
+	if s.statusMsg == "" {
+		t.Error("applyCgroupSelection left statusMsg empty")
+	}
+
+	// Selecting the default entry (index 0) clears the override.
+	s.cgroupSelectMode = true
+	s.cgroupSelectCursor = 0
+	s.applyCgroupSelection()
+	if cgroupSuffix != "" {
+		t.Errorf("cgroupSuffix after selecting default entry = %q, want \"\"", cgroupSuffix)
+	}
+}
+
 func TestRowAt(t *testing.T) {
 	s := newMonitorState()
 	s.scrollOffset = 5

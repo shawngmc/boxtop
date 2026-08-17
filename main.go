@@ -154,6 +154,19 @@ func run(interval time.Duration, initialFilter string) error {
 					drained = false
 				}
 			}
+			// A cgroup picker selection ('g', Enter) redirects every reader
+			// in cgroup.go via cgroupSuffix, but the meters in `data` were
+			// captured against the old target — re-poll now instead of
+			// leaving stale numbers up for however long is left on the
+			// ticker.
+			if state.cgroupChangePending {
+				state.cgroupChangePending = false
+				data, err = collectFrame(state)
+				if err != nil {
+					return err
+				}
+				redraw = true
+			}
 			if redraw {
 				drawFrame(screen, state, data)
 				screen.Show()
@@ -178,18 +191,21 @@ func handleEvent(screen tcell.Screen, state *monitorState, ev tcell.Event) (redr
 		if state.killConfirmMode {
 			return handleKillConfirmKey(state, e)
 		}
+		if state.cgroupSelectMode {
+			return handleCgroupSelectKey(state, e)
+		}
 		if state.detailMode {
 			return handleDetailKey(state, e)
 		}
 		if state.helpMode {
 			return handleHelpKey(state, e)
 		}
-		// killStatusMsg clears on the very next keypress, whatever it is —
+		// statusMsg clears on the very next keypress, whatever it is —
 		// including a key that would otherwise be a no-op — so the OR-in of
 		// clearedStatus below still forces a redraw to drop the stale text.
-		clearedStatus := state.killStatusMsg != ""
+		clearedStatus := state.statusMsg != ""
 		if clearedStatus {
-			state.killStatusMsg = ""
+			state.statusMsg = ""
 		}
 		var redraw, quit bool
 		if state.filterMode {
@@ -273,6 +289,10 @@ func handleNormalKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool)
 			state.openHelpView()
 			return true, false
 		}
+		if r == 'g' || r == 'G' {
+			state.openCgroupSelect()
+			return true, false
+		}
 		state.handleRuneKey(r)
 	default:
 		return false, false
@@ -318,6 +338,49 @@ func handleHelpKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool) {
 			state.closeHelpView()
 			return true, false
 		}
+	}
+	return false, false
+}
+
+// handleCgroupSelectKey applies a single keypress while the cgroup picker
+// (opened via 'g'/'G') has focus. Unlike handleDetailKey/handleHelpKey,
+// this popup accepts text input to narrow the list — so, like
+// handleFilterKey, typed runes (including 'q') feed the filter rather than
+// closing the popup; only Esc/Ctrl+C cancel and Enter commits.
+func handleCgroupSelectKey(state *monitorState, e *tcell.EventKey) (redraw, quit bool) {
+	switch e.Key() {
+	case tcell.KeyCtrlC:
+		return false, true
+	case tcell.KeyEscape:
+		state.closeCgroupSelect()
+		return true, false
+	case tcell.KeyEnter:
+		state.applyCgroupSelection()
+		return true, false
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		state.cgroupSelectBackspace()
+		return true, false
+	case tcell.KeyUp:
+		state.cgroupSelectMove(-1)
+		return true, false
+	case tcell.KeyDown:
+		state.cgroupSelectMove(1)
+		return true, false
+	case tcell.KeyPgUp:
+		state.cgroupSelectMove(-cgroupSelectPageSize)
+		return true, false
+	case tcell.KeyPgDn:
+		state.cgroupSelectMove(cgroupSelectPageSize)
+		return true, false
+	case tcell.KeyHome:
+		state.cgroupSelectHome()
+		return true, false
+	case tcell.KeyEnd:
+		state.cgroupSelectEnd()
+		return true, false
+	case tcell.KeyRune:
+		state.cgroupSelectAppendRune(e.Rune())
+		return true, false
 	}
 	return false, false
 }

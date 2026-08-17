@@ -34,6 +34,9 @@ Features:
   process list is still the host's own `/proc`, unscoped by `--cgroup`);
   `--list-cgroups` prints every cgroup name found on the host to help pick
   one
+- Cgroup picker: press `g` to switch the monitored cgroup without
+  restarting — search/filter the live host list, `Enter` to apply
+  immediately (no waiting for the next refresh tick), `Esc` to cancel
 
 
 

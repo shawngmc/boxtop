@@ -212,9 +212,9 @@ func TestDrawFrameFooterKillConfirmAndStatus(t *testing.T) {
 	}
 
 	state.killConfirmMode = false
-	state.killStatusMsg = "Sent SIGTERM to PID 4242 (sleep)"
+	state.statusMsg = "Sent SIGTERM to PID 4242 (sleep)"
 	drawFrame(screen, state, data)
-	if _, ok := findRow(screen, w, h, state.killStatusMsg); !ok {
+	if _, ok := findRow(screen, w, h, state.statusMsg); !ok {
 		t.Error("kill status message not found on screen")
 	}
 }
@@ -299,6 +299,60 @@ func TestDrawFrameFooterMentionsHelpKey(t *testing.T) {
 	w, h := screen.Size()
 	if _, ok := findRow(screen, w, h, "Help: [h]"); !ok {
 		t.Error("default footer did not advertise the help key")
+	}
+}
+
+func TestDrawFrameFooterMentionsCgroupKey(t *testing.T) {
+	screen := newTestScreen(t, 200, 24)
+	state := newMonitorState()
+	data := testFrameData([]Process{
+		{PID: 1, Name: "init", NameLower: "init", Cmd: "/sbin/init"},
+	})
+	drawFrame(screen, state, data)
+
+	w, h := screen.Size()
+	if _, ok := findRow(screen, w, h, "Cgroup: [g]"); !ok {
+		t.Error("default footer did not advertise the cgroup-picker key")
+	}
+}
+
+func TestDrawFrameCgroupSelectPopup(t *testing.T) {
+	screen := newTestScreen(t, 100, 24)
+	state := newMonitorState()
+	data := testFrameData([]Process{
+		{PID: 1, Name: "init", NameLower: "init", Cmd: "/sbin/init"},
+	})
+
+	state.cgroupSelectMode = true
+	state.cgroupSelectAll = []string{"docker/1a2b3c4d5e6f", "system.slice/foo.service"}
+	drawFrame(screen, state, data)
+
+	w, h := screen.Size()
+	for _, want := range []string{
+		"Select cgroup",
+		cgroupSelectDefaultLabel,
+		"docker/1a2b3c4d5e6f",
+		"system.slice/foo.service",
+	} {
+		if _, ok := findRow(screen, w, h, want); !ok {
+			t.Errorf("cgroup select popup text %q not found on screen", want)
+		}
+	}
+	if _, ok := findRow(screen, w, h, "Select cgroup: type to search"); !ok {
+		t.Error("main footer did not show the cgroup-select-mode hint")
+	}
+
+	// Typing narrows the list and jumps the cursor back to the top.
+	state.cgroupSelectCursor = 1
+	state.cgroupSelectAppendRune('f')
+	state.cgroupSelectAppendRune('o')
+	state.cgroupSelectAppendRune('o')
+	drawFrame(screen, state, data)
+	if _, ok := findRow(screen, w, h, "docker/1a2b3c4d5e6f"); ok {
+		t.Error("cgroup select popup still shows a name that doesn't match the filter")
+	}
+	if _, ok := findRow(screen, w, h, "system.slice/foo.service"); !ok {
+		t.Error("cgroup select popup dropped a name that matches the filter")
 	}
 }
 

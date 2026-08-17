@@ -84,9 +84,10 @@ type monitorState struct {
 	killTargetPID   int
 	killTargetName  string
 
-	// killStatusMsg is the one-line result of the last kill attempt, shown
-	// in place of the footer help line until the next keypress clears it.
-	killStatusMsg string
+	// statusMsg is the one-line result of the last kill attempt or cgroup
+	// switch, shown in place of the footer help line until the next
+	// keypress clears it (see handleEvent's clearedStatus).
+	statusMsg string
 
 	// detailMode is true while the process-details popup (opened via
 	// Enter) has focus — mirrors filterMode/killConfirmMode. detailData is
@@ -99,6 +100,30 @@ type monitorState struct {
 	// '?') has focus — mirrors detailMode. Unlike detailMode there's no
 	// snapshot data: the help text is static.
 	helpMode bool
+
+	// cgroupSelectMode is true while the cgroup picker (opened via 'g') has
+	// focus — mirrors detailMode/helpMode, but combines filterMode's
+	// incremental text editing with list navigation in one popup, since
+	// this is a one-shot searchable pick list rather than a separate
+	// type-then-browse phase. cgroupSelectAll is the full name list from
+	// listCgroups(), fetched once when the popup opens; cgroupSelectErr
+	// holds a listCgroups() failure (the popup still shows the synthetic
+	// "boxtop's own cgroup" entry even then). cgroupSelectFilter narrows
+	// cgroupSelectAll like the process filter; cgroupSelectCursor/
+	// cgroupSelectScroll index into the filtered display list built by
+	// cgroupSelectDisplayNames.
+	cgroupSelectMode   bool
+	cgroupSelectAll    []string
+	cgroupSelectErr    string
+	cgroupSelectFilter string
+	cgroupSelectCursor int
+	cgroupSelectScroll int
+
+	// cgroupChangePending is set by applyCgroupSelection when the picker
+	// commits a new monitoring target, so the run loop in main.go re-polls
+	// immediately (collectFrame) instead of leaving stale meters on screen
+	// for up to a full tick interval.
+	cgroupChangePending bool
 
 	cgroupCPUPrevUsageUsec int64
 	cgroupCPUPrevTime      time.Time
@@ -395,7 +420,7 @@ func (s *monitorState) startKillConfirm() bool {
 	s.killTargetPID = p.PID
 	s.killTargetName = p.Name
 	s.killConfirmMode = true
-	s.killStatusMsg = ""
+	s.statusMsg = ""
 	return true
 }
 
@@ -413,7 +438,7 @@ func (s *monitorState) sendKillSignal(sig syscall.Signal) {
 		sigName = "SIGKILL"
 	}
 	err := syscall.Kill(s.killTargetPID, sig)
-	s.killStatusMsg = killResultMessage(s.killTargetPID, s.killTargetName, sigName, err)
+	s.statusMsg = killResultMessage(s.killTargetPID, s.killTargetName, sigName, err)
 	s.killConfirmMode = false
 }
 
@@ -461,6 +486,138 @@ func (s *monitorState) openHelpView() {
 // closeHelpView closes the keybinding help popup (Enter/Esc/q).
 func (s *monitorState) closeHelpView() {
 	s.helpMode = false
+}
+
+// cgroupSelectDefaultLabel is the synthetic entry always pinned at index 0
+// of cgroupSelectDisplayNames, representing "clear --cgroup and go back to
+// boxtop's own cgroup" (cgroupSuffix == "").
+const cgroupSelectDefaultLabel = "(default — boxtop's own cgroup)"
+
+// cgroupSelectPageSize is how many rows PgUp/PgDn move in the cgroup
+// picker, mirroring lastPageSize's role for the main process table (which
+// can't be reused directly here since the picker has its own, much
+// shorter, viewport).
+const cgroupSelectPageSize = 10
+
+// openCgroupSelect opens the cgroup picker ('g'), fetching the current host
+// cgroup list via listCgroups() once up front — same data --list-cgroups
+// prints, walked fresh each time the popup opens rather than cached, since
+// containers can come and go between presses. Preselects the cursor on the
+// currently-active cgroup (or the default entry, if none is set) so
+// reopening the picker shows where monitoring is already pointed.
+func (s *monitorState) openCgroupSelect() {
+	names, err := listCgroups()
+	s.cgroupSelectAll = names
+	if err != nil {
+		s.cgroupSelectErr = err.Error()
+	} else {
+		s.cgroupSelectErr = ""
+	}
+	s.cgroupSelectFilter = ""
+	s.cgroupSelectScroll = 0
+	s.cgroupSelectCursor = 0
+	if cgroupSuffix != "" {
+		for i, n := range names {
+			if n == cgroupSuffix {
+				s.cgroupSelectCursor = i + 1 // +1: index 0 is the default entry
+				break
+			}
+		}
+	}
+	s.cgroupSelectMode = true
+}
+
+// closeCgroupSelect closes the picker without changing the monitored
+// cgroup (Esc).
+func (s *monitorState) closeCgroupSelect() {
+	s.cgroupSelectMode = false
+}
+
+// cgroupSelectDisplayNames is the picker's current filtered view: the
+// default entry, always first and unaffected by the filter (it's the "get
+// me out of here" option and should stay reachable no matter what's
+// typed), followed by every cgroupSelectAll entry whose name contains
+// cgroupSelectFilter (case-insensitive).
+func (s *monitorState) cgroupSelectDisplayNames() []string {
+	out := make([]string, 0, len(s.cgroupSelectAll)+1)
+	out = append(out, cgroupSelectDefaultLabel)
+	q := strings.ToLower(s.cgroupSelectFilter)
+	for _, n := range s.cgroupSelectAll {
+		if q == "" || strings.Contains(strings.ToLower(n), q) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// cgroupSelectAppendRune adds a typed character to the picker's filter and,
+// like appendFilterRune, jumps the cursor back to the top — the old cursor
+// position is an index into a match set that just changed.
+func (s *monitorState) cgroupSelectAppendRune(r rune) {
+	s.cgroupSelectFilter += string(r)
+	s.cgroupSelectCursor = 0
+	s.cgroupSelectScroll = 0
+}
+
+// cgroupSelectBackspace removes the last rune of the picker's filter, if
+// any, mirroring filterBackspace.
+func (s *monitorState) cgroupSelectBackspace() {
+	if s.cgroupSelectFilter == "" {
+		return
+	}
+	runes := []rune(s.cgroupSelectFilter)
+	s.cgroupSelectFilter = string(runes[:len(runes)-1])
+	s.cgroupSelectCursor = 0
+	s.cgroupSelectScroll = 0
+}
+
+// cgroupSelectMove shifts the picker's cursor by delta rows (±1 for
+// Up/Down, ±cgroupSelectPageSize for PgUp/PgDn), clamped to the current
+// filtered list.
+func (s *monitorState) cgroupSelectMove(delta int) {
+	last := len(s.cgroupSelectDisplayNames()) - 1
+	s.cgroupSelectCursor += delta
+	if s.cgroupSelectCursor < 0 {
+		s.cgroupSelectCursor = 0
+	}
+	if s.cgroupSelectCursor > last {
+		s.cgroupSelectCursor = max(0, last)
+	}
+}
+
+// cgroupSelectHome/cgroupSelectEnd jump the picker's cursor to the first or
+// last row of the current filtered list (Home/End).
+func (s *monitorState) cgroupSelectHome() { s.cgroupSelectCursor = 0 }
+func (s *monitorState) cgroupSelectEnd() {
+	s.cgroupSelectCursor = max(0, len(s.cgroupSelectDisplayNames())-1)
+}
+
+// applyCgroupSelection commits the picker's highlighted row as the new
+// monitoring target (Enter): index 0 always means "clear the override and
+// go back to boxtop's own cgroup", any other row a name from
+// listCgroups(). Resets the cgroup CPU-sampling baseline, since
+// usage_usec/time from the old target has nothing to do with the new
+// one's counters — carrying it over would produce a bogus (possibly
+// negative) CPU% on the very next sample. cgroupChangePending tells the
+// run loop to re-poll immediately rather than leaving stale meters up
+// until the next tick.
+func (s *monitorState) applyCgroupSelection() {
+	names := s.cgroupSelectDisplayNames()
+	if s.cgroupSelectCursor < 0 || s.cgroupSelectCursor >= len(names) {
+		s.cgroupSelectMode = false
+		return
+	}
+	if s.cgroupSelectCursor == 0 {
+		cgroupSuffix = ""
+		s.statusMsg = "Now monitoring boxtop's own cgroup"
+	} else {
+		cgroupSuffix = names[s.cgroupSelectCursor]
+		s.statusMsg = "Now monitoring cgroup: " + cgroupSuffix
+	}
+	s.cgroupCPUHasBaseline = false
+	s.cgroupCPUPrevUsageUsec = 0
+	s.cgroupSelectMode = false
+	s.cgroupChangePending = true
 }
 
 // columnLabel ports col_header()'s arrow-appending: adds ▼ (descending)

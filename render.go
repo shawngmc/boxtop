@@ -688,16 +688,18 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		helpLine = fmt.Sprintf(" Kill PID %d (%s)?  [y] SIGTERM   [Y] SIGKILL   [Esc/n] cancel",
 			state.killTargetPID, state.killTargetName)
 		helpStyle = gradientStyle(1, summaryStops).Bold(true)
+	case state.cgroupSelectMode:
+		helpLine = " Select cgroup: type to search, [↑↓/PgUp/PgDn] move, [Enter] apply, [Esc] cancel"
 	case state.detailMode:
 		helpLine = " Process detail — [Enter/Esc/q] close"
 	case state.helpMode:
 		helpLine = " Keybinding help — [Enter/Esc/q] close"
 	case state.filterMode:
 		helpLine = " Filter: type to search, Enter to apply, Esc to clear | Ctrl+C exit"
-	case state.killStatusMsg != "":
-		helpLine = " " + state.killStatusMsg
+	case state.statusMsg != "":
+		helpLine = " " + state.statusMsg
 	default:
-		helpLine += " | Filter: [/] | Kill: [x] | Details: [Enter]"
+		helpLine += " | Filter: [/] | Kill: [x] | Details: [Enter] | Cgroup: [g]"
 	}
 	drawText(screen, 0, y, helpLine, helpStyle)
 
@@ -706,6 +708,9 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 	}
 	if state.helpMode {
 		drawHelpPopup(screen, w, h)
+	}
+	if state.cgroupSelectMode {
+		drawCgroupSelectPopup(screen, state, w, h)
 	}
 }
 
@@ -749,24 +754,11 @@ func detailLines(d ProcessDetail) []string {
 	return lines
 }
 
-// drawDetailPopup draws a bordered, centered box over the already-drawn
-// frame showing d's fields — called last in drawFrame so it overlays the
-// process table rather than being overwritten by it.
-func drawDetailPopup(screen tcell.Screen, d ProcessDetail, w, h int) {
-	lines := detailLines(d)
-
-	boxW := min(74, w-2)
-	if boxW < 24 {
-		boxW = min(24, w)
-	}
-	boxH := min(len(lines)+4, h-2)
-	if boxH < 6 {
-		boxH = min(6, h)
-	}
-	x0 := max(0, (w-boxW)/2)
-	y0 := max(0, (h-boxH)/2)
-
-	style := tcell.StyleDefault
+// drawPopupBox draws a bordered box's frame (corners, edges, blanked
+// interior) at the given position/size, clipped to the screen — shared by
+// drawDetailPopup/drawHelpPopup/drawCgroupSelectPopup so the border-drawing
+// loop isn't tripled across them.
+func drawPopupBox(screen tcell.Screen, x0, y0, boxW, boxH, w, h int, style tcell.Style) {
 	for y := y0; y < y0+boxH && y < h; y++ {
 		for x := x0; x < x0+boxW && x < w; x++ {
 			ch := ' '
@@ -787,6 +779,27 @@ func drawDetailPopup(screen tcell.Screen, d ProcessDetail, w, h int) {
 			screen.SetContent(x, y, ch, nil, style)
 		}
 	}
+}
+
+// drawDetailPopup draws a bordered, centered box over the already-drawn
+// frame showing d's fields — called last in drawFrame so it overlays the
+// process table rather than being overwritten by it.
+func drawDetailPopup(screen tcell.Screen, d ProcessDetail, w, h int) {
+	lines := detailLines(d)
+
+	boxW := min(74, w-2)
+	if boxW < 24 {
+		boxW = min(24, w)
+	}
+	boxH := min(len(lines)+4, h-2)
+	if boxH < 6 {
+		boxH = min(6, h)
+	}
+	x0 := max(0, (w-boxW)/2)
+	y0 := max(0, (h-boxH)/2)
+
+	style := tcell.StyleDefault
+	drawPopupBox(screen, x0, y0, boxW, boxH, w, h, style)
 
 	innerWidth := boxW - 4
 	title := fmt.Sprintf(" Process Detail: PID %d ", d.PID)
@@ -825,6 +838,7 @@ func helpLines() []string {
 		"  x        kill selected process (y: SIGTERM, Y: SIGKILL)",
 		"",
 		"Other",
+		"  g          pick a different cgroup to monitor",
 		"  h, ?       this help screen",
 		"  q, Ctrl+C  quit (or close a popup)",
 	}
@@ -857,26 +871,7 @@ func drawHelpPopup(screen tcell.Screen, w, h int) {
 	y0 := max(0, (h-boxH)/2)
 
 	style := tcell.StyleDefault
-	for y := y0; y < y0+boxH && y < h; y++ {
-		for x := x0; x < x0+boxW && x < w; x++ {
-			ch := ' '
-			switch {
-			case y == y0 && x == x0:
-				ch = '┌'
-			case y == y0 && x == x0+boxW-1:
-				ch = '┐'
-			case y == y0+boxH-1 && x == x0:
-				ch = '└'
-			case y == y0+boxH-1 && x == x0+boxW-1:
-				ch = '┘'
-			case y == y0 || y == y0+boxH-1:
-				ch = '─'
-			case x == x0 || x == x0+boxW-1:
-				ch = '│'
-			}
-			screen.SetContent(x, y, ch, nil, style)
-		}
-	}
+	drawPopupBox(screen, x0, y0, boxW, boxH, w, h, style)
 
 	innerWidth := boxW - 4
 	drawText(screen, x0+2, y0, truncateVisible(" Keybindings ", innerWidth), style.Bold(true))
@@ -888,6 +883,84 @@ func drawHelpPopup(screen tcell.Screen, w, h int) {
 		}
 		drawText(screen, x0+2, y0+1+i, truncateVisible(l, innerWidth), style)
 	}
+}
+
+// drawCgroupSelectPopup draws the cgroup picker ('g'): a bordered, centered
+// box with a filter line and a scrollable, cursor-highlighted list —
+// mirroring drawDetailPopup/drawHelpPopup's box layout, but with its own
+// scroll bookkeeping (state.cgroupSelectScroll) since neither of those
+// popups needs one. Called last in drawFrame so it overlays the process
+// table. Reads and writes state directly (clamping cursor/scroll to the
+// current filtered list) the same way drawFrame itself already mutates
+// state.tableTop/state.sortHitboxes/etc. as a side effect of drawing.
+func drawCgroupSelectPopup(screen tcell.Screen, state *monitorState, w, h int) {
+	names := state.cgroupSelectDisplayNames()
+
+	longest := len([]rune(cgroupSelectDefaultLabel))
+	for _, n := range names {
+		if rl := len([]rune(n)); rl > longest {
+			longest = rl
+		}
+	}
+	boxW := min(longest+6, w-2)
+	if boxW < 30 {
+		boxW = min(30, w)
+	}
+	boxH := min(len(names)+5, 22)
+	boxH = min(boxH, h-2)
+	if boxH < 8 {
+		boxH = min(8, h)
+	}
+	x0 := max(0, (w-boxW)/2)
+	y0 := max(0, (h-boxH)/2)
+
+	style := tcell.StyleDefault
+	drawPopupBox(screen, x0, y0, boxW, boxH, w, h, style)
+
+	innerWidth := boxW - 4
+	drawText(screen, x0+2, y0, truncateVisible(" Select cgroup ", innerWidth), style.Bold(true))
+
+	filterLine := "Filter: " + state.cgroupSelectFilter + "█"
+	drawText(screen, x0+2, y0+1, truncateVisible(filterLine, innerWidth), style)
+
+	hintY := y0 + boxH - 2
+	listTop := y0 + 2
+	if state.cgroupSelectErr != "" {
+		errLine := "list error: " + state.cgroupSelectErr
+		drawText(screen, x0+2, listTop, truncateVisible(errLine, innerWidth), style)
+		listTop++
+	}
+	listRows := max(1, hintY-listTop)
+
+	// Clamp cursor/scroll to the current filtered length — it can shrink
+	// out from under an old scroll position whenever a keystroke changes
+	// the filter.
+	total := len(names)
+	if state.cgroupSelectCursor > total-1 {
+		state.cgroupSelectCursor = max(0, total-1)
+	}
+	if state.cgroupSelectCursor < state.cgroupSelectScroll {
+		state.cgroupSelectScroll = state.cgroupSelectCursor
+	} else if state.cgroupSelectCursor > state.cgroupSelectScroll+listRows-1 {
+		state.cgroupSelectScroll = state.cgroupSelectCursor - listRows + 1
+	}
+	if state.cgroupSelectScroll < 0 {
+		state.cgroupSelectScroll = 0
+	}
+
+	end := min(total, state.cgroupSelectScroll+listRows)
+	for i := state.cgroupSelectScroll; i < end; i++ {
+		rowStyle := style
+		prefix := "  "
+		if i == state.cgroupSelectCursor {
+			rowStyle = style.Reverse(true)
+			prefix = "> "
+		}
+		line := runewidth.FillRight(runewidth.Truncate(prefix+names[i], innerWidth, "…"), innerWidth)
+		drawText(screen, x0+2, listTop+(i-state.cgroupSelectScroll), line, rowStyle)
+	}
+
+	drawText(screen, x0+2, hintY, truncateVisible("↑↓ select  Enter: apply  Esc: cancel", innerWidth), style.Italic(true))
 }
 
 func repeatRune(r rune, n int) string {
