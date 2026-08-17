@@ -430,7 +430,7 @@ func collectFrame(state *monitorState) (frameData, error) {
 		// constrained" bucket as v1's unlimited cgroups, which parse fine
 		// but as the kernel's ~LONG_MAX-ish sentinel. Both cases fall back
 		// to the host's total memory as the denominator.
-		if haveHost && (!okMax || maxBytes <= 0 || maxBytes > host.totalKB*1024) {
+		if haveHost && cgroupMemUnlimited(maxBytes, okMax, host.totalKB*1024) {
 			maxBytes = host.totalKB * 1024
 			ramNoLimit = true
 		}

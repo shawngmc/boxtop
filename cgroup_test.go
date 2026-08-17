@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
 
 func TestMeminfoInt(t *testing.T) {
 	const meminfo = "MemTotal:       16384000 kB\nMemFree:         8192000 kB\n" +
@@ -174,6 +178,126 @@ func TestCgroupFile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCgroupMemUnlimited(t *testing.T) {
+	tests := []struct {
+		name           string
+		maxBytes       int64
+		okMax          bool
+		hostTotalBytes int64
+		want           bool
+	}{
+		{"v2 max sentinel (parse failure)", 0, false, 16 << 30, true},
+		{"v1 huge sentinel above host total", 1 << 62, true, 16 << 30, true},
+		{"real limit under host total", 512 << 20, true, 16 << 30, false},
+		{"limit equal to host total is still a real limit (strictly greater-than is unlimited)", 16 << 30, true, 16 << 30, false},
+		{"zero or negative treated as unlimited", 0, true, 16 << 30, true},
+		{"host total unknown: only okMax/maxBytes checked", 512 << 20, true, 0, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cgroupMemUnlimited(tc.maxBytes, tc.okMax, tc.hostTotalBytes); got != tc.want {
+				t.Errorf("cgroupMemUnlimited(%d, %v, %d) = %v, want %v", tc.maxBytes, tc.okMax, tc.hostTotalBytes, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatCgroupStatusFields(t *testing.T) {
+	tests := []struct {
+		name         string
+		st           cgroupStatus
+		wantMemCurr  string
+		wantMemLimit string
+		wantCPULimit string
+	}{
+		{
+			name:         "no data at all",
+			st:           cgroupStatus{},
+			wantMemCurr:  "-",
+			wantMemLimit: "-",
+			wantCPULimit: "-",
+		},
+		{
+			name: "memory bounded, quota-limited CPU",
+			st: cgroupStatus{
+				haveMemCurrent: true, memCurrentBytes: 512 << 20,
+				memMaxBytes: 2 << 30,
+				haveCPU:     true, cpuCores: 2, cpuSource: cpuSourceQuota,
+			},
+			wantMemCurr:  "512M",
+			wantMemLimit: "2.0G",
+			wantCPULimit: "2.00 cores (quota)",
+		},
+		{
+			name: "memory readable but unlimited, no CPU limit",
+			st: cgroupStatus{
+				haveMemCurrent: true, memCurrentBytes: 48 << 20, memUnlimited: true,
+			},
+			wantMemCurr:  "48M",
+			wantMemLimit: "(no limit)",
+			wantCPULimit: "-",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatMemCurrent(tc.st); got != tc.wantMemCurr {
+				t.Errorf("formatMemCurrent() = %q, want %q", got, tc.wantMemCurr)
+			}
+			if got := formatMemLimit(tc.st); got != tc.wantMemLimit {
+				t.Errorf("formatMemLimit() = %q, want %q", got, tc.wantMemLimit)
+			}
+			if got := formatCPULimit(tc.st); got != tc.wantCPULimit {
+				t.Errorf("formatCPULimit() = %q, want %q", got, tc.wantCPULimit)
+			}
+		})
+	}
+}
+
+func TestPrintCgroupList(t *testing.T) {
+	t.Run("not mounted", func(t *testing.T) {
+		var buf bytes.Buffer
+		printCgroupList(&buf, cgroupHostInfo{mounted: false}, nil)
+		if !strings.Contains(buf.String(), "not mounted") {
+			t.Errorf("output = %q, want it to mention \"not mounted\"", buf.String())
+		}
+	})
+
+	t.Run("mounted, no cgroups found", func(t *testing.T) {
+		var buf bytes.Buffer
+		printCgroupList(&buf, cgroupHostInfo{mounted: true, unified: true, controllers: []string{"cpu", "memory"}}, nil)
+		out := buf.String()
+		if !strings.Contains(out, "cgroup v2 (unified)") {
+			t.Errorf("output = %q, want it to mention the v2 version", out)
+		}
+		if !strings.Contains(out, "controllers: cpu memory") {
+			t.Errorf("output = %q, want it to list controllers", out)
+		}
+		if !strings.Contains(out, "no cgroups found") {
+			t.Errorf("output = %q, want it to say no cgroups were found", out)
+		}
+	})
+
+	t.Run("mounted, one cgroup", func(t *testing.T) {
+		var buf bytes.Buffer
+		host := cgroupHostInfo{mounted: true, unified: false}
+		statuses := []cgroupStatus{
+			{name: "docker/1a2b3c4d5e6f", haveMemCurrent: true, memCurrentBytes: 512 << 20, memMaxBytes: 2 << 30,
+				haveCPU: true, cpuCores: 2, cpuSource: cpuSourceQuota},
+		}
+		printCgroupList(&buf, host, statuses)
+		out := buf.String()
+		if !strings.Contains(out, "v1 (legacy/hybrid)") {
+			t.Errorf("output = %q, want it to mention the v1 version", out)
+		}
+		if !strings.Contains(out, "docker/1a2b3c4d5e6f") {
+			t.Errorf("output = %q, want it to list the cgroup name", out)
+		}
+		if !strings.Contains(out, "512M") || !strings.Contains(out, "2.0G") || !strings.Contains(out, "2.00 cores (quota)") {
+			t.Errorf("output = %q, want it to include the status columns", out)
+		}
+	})
 }
 
 func TestFirstLineWithPrefix(t *testing.T) {

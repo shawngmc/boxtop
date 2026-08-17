@@ -1,12 +1,15 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 )
 
 // cgroupSuffix is the path, relative to each controller's own mount root,
@@ -84,6 +87,191 @@ func listCgroups() ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// cgroupHostInfo summarizes the cgroup filesystem itself — separate from
+// any single cgroup's own status, since "which hierarchy version" and
+// "which controllers exist at all" are host-wide facts rather than
+// per-cgroup ones. Printed as a header above --list-cgroups' per-cgroup
+// table.
+type cgroupHostInfo struct {
+	mounted     bool
+	unified     bool     // true: cgroup v2 (unified); false: v1 (legacy/hybrid)
+	controllers []string // enabled controllers, sorted; empty if undetermined
+}
+
+// readCgroupHostInfo detects the cgroup filesystem's version and which
+// controllers are enabled, via the same cgroup.controllers marker file
+// listCgroups() uses to pick its walk root: its presence means v2, and its
+// contents list the enabled controllers directly. On v1 there's no single
+// marker file, so the controllers are read off the per-controller
+// directory names under /sys/fs/cgroup instead (memory, cpu, cpuset, ...).
+func readCgroupHostInfo() cgroupHostInfo {
+	info := cgroupHostInfo{mounted: cgroupFSMounted()}
+	if data, err := os.ReadFile("/sys/fs/cgroup/cgroup.controllers"); err == nil {
+		info.unified = true
+		info.controllers = strings.Fields(strings.TrimSpace(string(data)))
+		return info
+	}
+	if entries, err := os.ReadDir("/sys/fs/cgroup"); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				info.controllers = append(info.controllers, e.Name())
+			}
+		}
+		sort.Strings(info.controllers)
+	}
+	return info
+}
+
+// cgroupStatus is a single cgroup's memory/CPU status, as reported by
+// --list-cgroups alongside its name.
+type cgroupStatus struct {
+	name string
+
+	memCurrentBytes int64
+	haveMemCurrent  bool
+	memMaxBytes     int64
+	memUnlimited    bool // true when memCurrent is known but there's no real memory.max
+
+	cpuCores  float64
+	cpuSource cpuLimitSource
+	haveCPU   bool
+}
+
+// cgroupMemUnlimited reports whether a memory.max reading should be
+// treated as "no real limit set": v2's "max" sentinel for unbounded fails
+// to parse as an integer (okMax false), while v1's unbounded cgroups parse
+// fine but as a huge sentinel value, so both cases are folded together by
+// also treating anything at or above the host's own total as unbounded.
+// This is the same test collectFrame applies when deciding whether to fall
+// back to the host total as the RAM meter's denominator.
+func cgroupMemUnlimited(maxBytes int64, okMax bool, hostTotalBytes int64) bool {
+	return !okMax || maxBytes <= 0 || (hostTotalBytes > 0 && maxBytes > hostTotalBytes)
+}
+
+// readCgroupStatusFor reads the memory and CPU limit status of a single
+// cgroup, identified the same way --cgroup accepts it (e.g.
+// "docker/1a2b3c4d5e6f"), for --list-cgroups' status table. It works by
+// temporarily pointing the package-level cgroupSuffix at name and reusing
+// readCgroupVal/readCgroupCPULimit — the same readers collectFrame uses
+// for whichever single cgroup --cgroup points boxtop at — which is safe
+// here because --list-cgroups runs once, single-threaded, strictly before
+// main ever sets cgroupSuffix from a real --cgroup flag.
+func readCgroupStatusFor(name string, hostTotalBytes int64) cgroupStatus {
+	saved := cgroupSuffix
+	cgroupSuffix = name
+	defer func() { cgroupSuffix = saved }()
+
+	st := cgroupStatus{name: name}
+
+	maxBytes, okMax := readCgroupVal("memory.max")
+	if !okMax {
+		maxBytes, okMax = readCgroupVal("memory.limit_in_bytes")
+	}
+	currBytes, okCurr := readCgroupVal("memory.current")
+	if !okCurr {
+		currBytes, okCurr = readCgroupVal("memory.usage_in_bytes")
+	}
+	st.haveMemCurrent = okCurr
+	st.memCurrentBytes = currBytes
+	if okCurr {
+		if cgroupMemUnlimited(maxBytes, okMax, hostTotalBytes) {
+			st.memUnlimited = true
+		} else {
+			st.memMaxBytes = maxBytes
+		}
+	}
+
+	if cores, source, ok := readCgroupCPULimit(); ok && source != cpuSourceHost {
+		// cpuSourceHost means readCgroupCPULimit found no quota or cpuset
+		// specific to this cgroup and fell back to *boxtop's own* thread
+		// affinity — meaningful for whichever cgroup boxtop itself is
+		// running in, but not a real property of an arbitrary cgroup being
+		// listed here, so it's reported as "no limit" instead of a number
+		// that doesn't actually describe this cgroup.
+		st.cpuCores, st.cpuSource, st.haveCPU = cores, source, true
+	}
+
+	return st
+}
+
+// listCgroupsStatus is listCgroups() plus, for every name it finds, the
+// memory/CPU status --list-cgroups reports alongside it.
+func listCgroupsStatus() (cgroupHostInfo, []cgroupStatus, error) {
+	host := readCgroupHostInfo()
+	names, err := listCgroups()
+	if err != nil {
+		return host, nil, err
+	}
+	var hostTotalBytes int64
+	if m, ok := readHostMeminfo(); ok {
+		hostTotalBytes = m.totalKB * 1024
+	}
+	statuses := make([]cgroupStatus, len(names))
+	for i, name := range names {
+		statuses[i] = readCgroupStatusFor(name, hostTotalBytes)
+	}
+	return host, statuses, nil
+}
+
+// formatMemCurrent, formatMemLimit and formatCPULimit render a single
+// cgroupStatus field for --list-cgroups' table, each independently falling
+// back to "-" when that particular piece wasn't readable.
+func formatMemCurrent(st cgroupStatus) string {
+	if !st.haveMemCurrent {
+		return "-"
+	}
+	return formatBytesCompact(st.memCurrentBytes)
+}
+
+func formatMemLimit(st cgroupStatus) string {
+	if !st.haveMemCurrent {
+		return "-"
+	}
+	if st.memUnlimited {
+		return "(no limit)"
+	}
+	return formatBytesCompact(st.memMaxBytes)
+}
+
+func formatCPULimit(st cgroupStatus) string {
+	if !st.haveCPU {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f cores (%s)", st.cpuCores, st.cpuSource)
+}
+
+// printCgroupList writes --list-cgroups' full report to w: a short header
+// describing the cgroup filesystem itself (version, mount status, enabled
+// controllers), followed by one row per cgroup with its current memory
+// usage, memory limit, and CPU limit.
+func printCgroupList(w io.Writer, host cgroupHostInfo, statuses []cgroupStatus) {
+	if !host.mounted {
+		fmt.Fprintln(w, "cgroup filesystem: not mounted (no cgroup or cgroup2 mount found under /sys/fs/cgroup)")
+		return
+	}
+	version := "v1 (legacy/hybrid)"
+	if host.unified {
+		version = "v2 (unified)"
+	}
+	fmt.Fprintf(w, "cgroup filesystem: mounted, cgroup %s\n", version)
+	if len(host.controllers) > 0 {
+		fmt.Fprintf(w, "controllers: %s\n", strings.Join(host.controllers, " "))
+	}
+	fmt.Fprintln(w)
+
+	if len(statuses) == 0 {
+		fmt.Fprintln(w, "(no cgroups found)")
+		return
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tMEM CURRENT\tMEM LIMIT\tCPU LIMIT")
+	for _, st := range statuses {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", st.name, formatMemCurrent(st), formatMemLimit(st), formatCPULimit(st))
+	}
+	tw.Flush()
 }
 
 // firstLineWithPrefix returns the first line of s beginning with prefix,
