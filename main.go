@@ -131,6 +131,38 @@ func run(interval time.Duration, initialFilter string, forceNarrow bool) error {
 	}
 	drawFrame(screen, state, data)
 	screen.Show()
+	lastDraw := time.Now()
+
+	// redrawTimer fires to flush a redraw that minRedrawInterval deferred
+	// (see below). It starts stopped/drained; redrawTimerC is nil whenever
+	// nothing is pending so the select case below just never fires.
+	redrawTimer := time.NewTimer(time.Hour)
+	if !redrawTimer.Stop() {
+		<-redrawTimer.C
+	}
+	defer redrawTimer.Stop()
+	var redrawTimerC <-chan time.Time
+	pendingRedraw := false
+
+	doRedraw := func() {
+		// doRedraw can run while redrawTimer is still armed (a ticker tick
+		// or a fresh event both redraw immediately and preempt a deferred
+		// one) or right as it fires (the redrawTimerC case below has
+		// already consumed its value). Stop() covers the former; the
+		// non-blocking drain covers the latter without risking a deadlock
+		// on a channel nothing will ever send to again.
+		if pendingRedraw && !redrawTimer.Stop() {
+			select {
+			case <-redrawTimer.C:
+			default:
+			}
+		}
+		drawFrame(screen, state, data)
+		screen.Show()
+		lastDraw = time.Now()
+		pendingRedraw = false
+		redrawTimerC = nil
+	}
 
 	for {
 		select {
@@ -167,17 +199,32 @@ func run(interval time.Duration, initialFilter string, forceNarrow bool) error {
 				}
 				redraw = true
 			}
-			if redraw {
-				drawFrame(screen, state, data)
-				screen.Show()
+			if !redraw {
+				continue
 			}
+			// A physical mouse wheel or a held arrow key can deliver events
+			// far faster than one drawFrame+Show per event is worth paying
+			// for — each pass repaints the whole screen (see drawFrame's
+			// screen.Clear() note), so an uncapped rate here was pegging a
+			// CPU core under continuous scrolling. Cap actual repaints to
+			// minRedrawInterval and let the drain loop above keep absorbing
+			// the backlog between them; a trailing redrawTimer guarantees
+			// the final state still gets flushed once the flood stops.
+			if since := time.Since(lastDraw); since >= minRedrawInterval {
+				doRedraw()
+			} else if !pendingRedraw {
+				pendingRedraw = true
+				redrawTimer.Reset(minRedrawInterval - since)
+				redrawTimerC = redrawTimer.C
+			}
+		case <-redrawTimerC:
+			doRedraw()
 		case <-ticker.C:
 			data, err = collectFrame(state)
 			if err != nil {
 				return err
 			}
-			drawFrame(screen, state, data)
-			screen.Show()
+			doRedraw()
 		}
 	}
 }
@@ -395,6 +442,13 @@ func handleCgroupSelectKey(state *monitorState, e *tcell.EventKey) (redraw, quit
 
 // mouseWheelStep is how many rows one wheel notch scrolls.
 const mouseWheelStep = 3
+
+// minRedrawInterval caps how often an event (scroll/keypress) can trigger a
+// full drawFrame+Show pass. 60fps is well above what's perceptible for
+// discrete scroll/cursor steps but keeps a flood of events (continuous
+// mouse-wheel scrolling, a held arrow key) from repainting the whole screen
+// once per event.
+const minRedrawInterval = 16 * time.Millisecond
 
 // handleFilterKey applies a single keypress while the incremental filter
 // input (opened via '/') has focus. Typed runes narrow the process list
