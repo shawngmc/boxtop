@@ -108,9 +108,9 @@ type cgroupHostInfo struct {
 // directory names under /sys/fs/cgroup instead (memory, cpu, cpuset, ...).
 func readCgroupHostInfo() cgroupHostInfo {
 	info := cgroupHostInfo{mounted: cgroupFSMounted()}
-	if data, err := os.ReadFile("/sys/fs/cgroup/cgroup.controllers"); err == nil {
+	if data, ok := readSmallFile("/sys/fs/cgroup/cgroup.controllers"); ok {
 		info.unified = true
-		info.controllers = strings.Fields(strings.TrimSpace(string(data)))
+		info.controllers = strings.Fields(strings.TrimSpace(data))
 		return info
 	}
 	if entries, err := os.ReadDir("/sys/fs/cgroup"); err == nil {
@@ -309,13 +309,13 @@ func firstLineWithPrefix(s, prefix string) (string, bool) {
 // like /sys/fs/cgroup/memory — so the check has to walk the mount table,
 // not just stat the root.
 func cgroupFSMounted() bool {
-	data, err := os.ReadFile("/proc/self/mountinfo")
-	if err != nil {
+	data, ok := readSmallFile("/proc/self/mountinfo")
+	if !ok {
 		// Can't tell either way; assume mounted so an unreadable mount
 		// table never changes behavior on its own.
 		return true
 	}
-	return hasCgroupMount(string(data))
+	return hasCgroupMount(data)
 }
 
 // hasCgroupMount is cgroupFSMounted's pure parsing half. mountinfo lines
@@ -356,11 +356,11 @@ func readCgroupVal(filename string) (int64, bool) {
 		cgroupFile("memory", filename),
 	}
 	for _, p := range paths {
-		data, err := os.ReadFile(p)
-		if err != nil {
+		data, ok := readSmallFile(p)
+		if !ok {
 			continue
 		}
-		s := strings.TrimSpace(string(data))
+		s := strings.TrimSpace(data)
 		n, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
 			continue
@@ -405,11 +405,10 @@ func meminfoInt(data, prefix string) (int64, bool) {
 // single missing field just leaves its zero value in place (MemTotal is
 // required for a useful result, so its absence is treated as failure too).
 func readHostMeminfo() (hostMeminfo, bool) {
-	raw, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
+	data, ok := readSmallFile("/proc/meminfo")
+	if !ok {
 		return hostMeminfo{}, false
 	}
-	data := string(raw)
 
 	totalKB, ok := meminfoInt(data, "MemTotal:")
 	if !ok {
@@ -505,8 +504,8 @@ func countCPUList(s string) int {
 // total CPU count. Returns (0, "", false) if nothing could be determined.
 func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 	// cgroup v2: single file, "$QUOTA $PERIOD" or "max $PERIOD"
-	if data, err := os.ReadFile(cgroupFile("", "cpu.max")); err == nil {
-		parts := strings.Fields(strings.TrimSpace(string(data)))
+	if data, ok := readSmallFile(cgroupFile("", "cpu.max")); ok {
+		parts := strings.Fields(strings.TrimSpace(data))
 		if len(parts) == 2 && parts[0] != "max" {
 			quota, errQ := strconv.ParseInt(parts[0], 10, 64)
 			period, errP := strconv.ParseInt(parts[1], 10, 64)
@@ -516,11 +515,11 @@ func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 		}
 	} else {
 		// cgroup v1: two separate files
-		quotaData, errQ := os.ReadFile(cgroupFile("cpu", "cpu.cfs_quota_us"))
-		periodData, errP := os.ReadFile(cgroupFile("cpu", "cpu.cfs_period_us"))
-		if errQ == nil && errP == nil {
-			quota, e1 := strconv.ParseInt(strings.TrimSpace(string(quotaData)), 10, 64)
-			period, e2 := strconv.ParseInt(strings.TrimSpace(string(periodData)), 10, 64)
+		quotaData, okQ := readSmallFile(cgroupFile("cpu", "cpu.cfs_quota_us"))
+		periodData, okP := readSmallFile(cgroupFile("cpu", "cpu.cfs_period_us"))
+		if okQ && okP {
+			quota, e1 := strconv.ParseInt(strings.TrimSpace(quotaData), 10, 64)
+			period, e2 := strconv.ParseInt(strings.TrimSpace(periodData), 10, 64)
 			if e1 == nil && e2 == nil && quota > 0 && period > 0 {
 				return float64(quota) / float64(period), cpuSourceQuota, true
 			}
@@ -534,11 +533,11 @@ func readCgroupCPULimit() (float64, cpuLimitSource, bool) {
 		cgroupFile("cpuset", "cpuset.cpus"),
 	}
 	for _, p := range cpusetPaths {
-		data, err := os.ReadFile(p)
-		if err != nil {
+		data, ok := readSmallFile(p)
+		if !ok {
 			continue
 		}
-		s := strings.TrimSpace(string(data))
+		s := strings.TrimSpace(data)
 		if s == "" {
 			continue
 		}
@@ -573,11 +572,11 @@ func readCgroupName() (string, bool) {
 	if cgroupSuffix != "" {
 		return cgroupSuffix, true
 	}
-	data, err := os.ReadFile("/proc/self/cgroup")
-	if err != nil {
+	data, ok := readSmallFile("/proc/self/cgroup")
+	if !ok {
 		return "", false
 	}
-	return parseCgroupName(string(data))
+	return parseCgroupName(data)
 }
 
 // parseCgroupName is readCgroupName's pure parsing half, split out for
@@ -644,11 +643,11 @@ func readCgroupOOMKills() (int64, bool) {
 		cgroupFile("memory", "memory.oom_control"),
 	}
 	for _, p := range paths {
-		data, err := os.ReadFile(p)
-		if err != nil {
+		data, ok := readSmallFile(p)
+		if !ok {
 			continue
 		}
-		if line, ok := firstLineWithPrefix(string(data), "oom_kill "); ok {
+		if line, ok := firstLineWithPrefix(data, "oom_kill "); ok {
 			fields := strings.Fields(line)
 			if len(fields) == 2 {
 				if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
@@ -663,8 +662,8 @@ func readCgroupOOMKills() (int64, bool) {
 // readCgroupCPUUsageUsec ports read_cgroup_cpu_usage_usec(): cumulative
 // CPU time consumed by the whole cgroup, in microseconds, since creation.
 func readCgroupCPUUsageUsec() (int64, bool) {
-	if data, err := os.ReadFile(cgroupFile("", "cpu.stat")); err == nil {
-		if line, ok := firstLineWithPrefix(string(data), "usage_usec"); ok {
+	if data, ok := readSmallFile(cgroupFile("", "cpu.stat")); ok {
+		if line, ok := firstLineWithPrefix(data, "usage_usec"); ok {
 			fields := strings.Fields(line)
 			if len(fields) == 2 {
 				if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
@@ -679,11 +678,11 @@ func readCgroupCPUUsageUsec() (int64, bool) {
 		cgroupFile("cpu,cpuacct", "cpuacct.usage"),
 	}
 	for _, p := range v1Paths {
-		data, err := os.ReadFile(p)
-		if err != nil {
+		data, ok := readSmallFile(p)
+		if !ok {
 			continue
 		}
-		s := strings.TrimSpace(string(data))
+		s := strings.TrimSpace(data)
 		if ns, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return ns / 1000, true // v1 reports nanoseconds
 		}

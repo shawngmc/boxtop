@@ -44,6 +44,29 @@ const clkTck = 100.0
 // counts in.
 var pageSizeKB = syscall.Getpagesize() / 1024
 
+// readSmallFile reads a small (single-page-ish) /proc or /sys file through
+// readProcFile's raw open/read/close path and hands back its contents as a
+// string. Every per-tick stat file outside the process loop (cgroup limits,
+// /proc/meminfo, /proc/stat, /proc/cpuinfo, ...) used to go through
+// os.ReadFile, which — per the readProcFile doc comment — pays an fstat,
+// nonblocking fcntl, poller registration, and GC finalizer that these
+// always-ready virtual files never need. Each call gets its own small
+// buffer since these are one-shot reads (not a per-pid loop with a buffer to
+// reuse), so the win is purely the skipped os.ReadFile overhead, not fewer
+// allocations.
+//
+// The returned string aliases the buffer via bytesToStr with no copy; that's
+// safe here because the buffer is freshly allocated per call and never
+// reused, so nothing can mutate it out from under a caller that holds onto
+// the string (e.g. readCgroupName's display label).
+func readSmallFile(path string) (string, bool) {
+	data, _, ok := readProcFile(path, make([]byte, 4096))
+	if !ok {
+		return "", false
+	}
+	return bytesToStr(data), true
+}
+
 // formatBytesCompact renders a byte count as a short human string — "512M"
 // below 1 GiB, "1.2G" at or above it — for the side-by-side top-bar meters,
 // which don't have room for "1234/4096 MB".

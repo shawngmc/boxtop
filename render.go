@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
@@ -764,8 +765,8 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 		// columns after it — runewidth.Truncate already accounts for the
 		// "…" tail's width, and FillRight pads to nameWidth/cmdWidth
 		// display cells the way "%-*s" pads to that many runes.
-		name := runewidth.FillRight(runewidth.Truncate(p.Name, nameWidth, "…"), nameWidth)
-		cmd := runewidth.FillRight(runewidth.Truncate(p.Cmd, cmdWidth, "…"), cmdWidth)
+		name := truncatePad(p.Name, nameWidth)
+		cmd := truncatePad(p.Cmd, cmdWidth)
 
 		var rssFrac float64
 		if maxKb > 0 {
@@ -1201,4 +1202,54 @@ func truncateVisible(s string, w int) string {
 		w = 0
 	}
 	return string(runes[:w])
+}
+
+// ellipsisWidth is the display width of the "…" tail truncatePad and the
+// process table's NAME/COMMAND truncation both use — computed once rather
+// than re-measured on every call.
+var ellipsisWidth = runewidth.StringWidth("…")
+
+// isASCIIString reports whether s is entirely 7-bit ASCII.
+func isASCIIString(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// truncatePad is runewidth.Truncate+FillRight (truncate to at most width
+// display cells, appending tail if it doesn't fit, then space-pad to
+// exactly width cells) — the pair the process table applies to every
+// visible row's NAME and COMMAND every redraw.
+//
+// Profiling drawFrame showed that pair was ~80% of every redraw's CPU, via
+// go-runewidth's uniseg-backed grapheme/line/word/sentence-break
+// segmentation — wildly disproportionate for what's almost always
+// plain-ASCII process names and commands. For ASCII input, byte length,
+// rune count, and display width are all identical, so this takes a
+// byte-slicing fast path that produces the exact same result without
+// walking uniseg's state machine; anything containing a non-ASCII byte
+// falls back to the real runewidth path, so wide (CJK) or combining-mark
+// names still truncate/pad by true display width.
+func truncatePad(s string, width int) string {
+	if !isASCIIString(s) {
+		return runewidth.FillRight(runewidth.Truncate(s, width, "…"), width)
+	}
+	if len(s) <= width {
+		if pad := width - len(s); pad > 0 {
+			return s + strings.Repeat(" ", pad)
+		}
+		return s
+	}
+	cut := width - ellipsisWidth
+	if cut < 0 {
+		cut = 0
+	}
+	truncated := s[:cut] + "…"
+	if pad := width - cut - ellipsisWidth; pad > 0 {
+		return truncated + strings.Repeat(" ", pad)
+	}
+	return truncated
 }

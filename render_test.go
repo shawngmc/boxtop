@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 )
 
 // newTestScreen builds an in-process tcell SimulationScreen — this is what
@@ -918,5 +919,33 @@ func TestCollectFrameGatesCPUHistoryOnBaseline(t *testing.T) {
 	}
 	if got := len(state.systemCPUHistory.recent(sparkHistoryLen)); got != 1 {
 		t.Errorf("systemCPUHistory length after 2nd collectFrame = %d, want 1", got)
+	}
+}
+
+// TestTruncatePadMatchesRunewidth checks truncatePad's ASCII fast path
+// against the exact runewidth.FillRight(runewidth.Truncate(...)) pipeline
+// it replaces in the process table's NAME/COMMAND columns, across every
+// width from 0 up to longer than the input — the ASCII fast path must be a
+// byte-for-byte drop-in, not just "close enough". Non-ASCII input (the one
+// case that still falls back to runewidth internally) is covered too, to
+// pin the fallback wiring itself.
+func TestTruncatePadMatchesRunewidth(t *testing.T) {
+	cases := []string{
+		"",
+		"a",
+		"chrome",
+		"/usr/bin/some-long-daemon-name --with --several --flags",
+		"exactly16chars!!",
+		"café",    // non-ASCII, narrow
+		"日本語プロセス", // non-ASCII, wide
+	}
+	for _, s := range cases {
+		for width := 0; width <= len(s)+4; width++ {
+			want := runewidth.FillRight(runewidth.Truncate(s, width, "…"), width)
+			got := truncatePad(s, width)
+			if got != want {
+				t.Errorf("truncatePad(%q, %d) = %q, want %q", s, width, got, want)
+			}
+		}
 	}
 }

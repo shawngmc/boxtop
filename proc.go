@@ -173,23 +173,29 @@ func parseStatNameCPU(raw string) (name string, cpuSecs float64, rssKb int64, ok
 // so this turns a per-tick read into a once-per-process read (dead pids are
 // evicted from the cache in buildProcesses).
 //
+// buf is the same reusable read buffer buildProcesses' /stat read uses (it's
+// safe to share: by the time cmdFor is called for a pid, that pid's /stat
+// data has already been fully parsed into name/cpuSecs/rssKb, so nothing
+// still references the old contents). newBuf is buf, possibly grown, for the
+// caller to store back — same convention as readProcFile itself.
+//
 // Empty cmdline (kernel threads, some zombies) falls back to the bracketed
 // short name, same as the Python version. A transient read *error* is not
 // cached, so a busy process that briefly refuses the read self-corrects next
 // tick instead of freezing on a fallback string.
-func cmdFor(pid int, name string, cache map[int]string) string {
+func cmdFor(pid int, name string, cache map[int]string, buf []byte) (cmd string, newBuf []byte) {
 	if c, ok := cache[pid]; ok {
-		return c
+		return c, buf
 	}
 
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
-	if err != nil {
-		return bracketName(name) // don't cache — retry next tick
+	data, buf, ok := readProcFile("/proc/"+strconv.Itoa(pid)+"/cmdline", buf)
+	if !ok {
+		return bracketName(name), buf // don't cache — retry next tick
 	}
 
-	cmd := parseCmdline(data, name)
+	cmd = parseCmdline(data, name)
 	cache[pid] = cmd
-	return cmd
+	return cmd, buf
 }
 
 // parseCmdline turns the NUL-separated raw /cmdline bytes into a display
@@ -264,12 +270,14 @@ func buildProcesses(state *monitorState, coresLimit float64) []Process {
 		}
 		seen[pid] = true
 
+		cmd, buf := cmdFor(pid, name, cmdCache, state.readBuf)
+		state.readBuf = buf
 		p := Process{
 			PID:       pid,
 			RSSKb:     rssKb,
 			Name:      name,
 			NameLower: strings.ToLower(name),
-			Cmd:       cmdFor(pid, name, cmdCache),
+			Cmd:       cmd,
 		}
 
 		// CPU% from the delta against the previous sample for this pid.

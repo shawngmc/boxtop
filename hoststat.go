@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"strconv"
 	"strings"
 )
@@ -22,11 +21,11 @@ type hostCPUSample struct {
 // clock-rate conversion needed: the caller only ever uses the ratio of two
 // deltas, so the units cancel out.
 func readHostCPUSample() (hostCPUSample, bool) {
-	data, err := os.ReadFile("/proc/stat")
-	if err != nil {
+	data, ok := readSmallFile("/proc/stat")
+	if !ok {
 		return hostCPUSample{}, false
 	}
-	line, ok := firstLineWithPrefix(string(data), "cpu ")
+	line, ok := firstLineWithPrefix(data, "cpu ")
 	if !ok {
 		return hostCPUSample{}, false
 	}

@@ -92,7 +92,7 @@ func TestBracketName(t *testing.T) {
 // that cannot exist proves the cache short-circuits the file read.
 func TestCmdForUsesCache(t *testing.T) {
 	cache := map[int]string{-1: "cached-cmd"}
-	if got := cmdFor(-1, "ignored", cache); got != "cached-cmd" {
+	if got, _ := cmdFor(-1, "ignored", cache, nil); got != "cached-cmd" {
 		t.Errorf("cmdFor cache hit = %q, want %q", got, "cached-cmd")
 	}
 }

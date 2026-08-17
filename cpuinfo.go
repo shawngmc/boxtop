@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"strconv"
 	"strings"
 )
@@ -25,13 +24,31 @@ func parseCPUModel(cpuinfo string) (string, bool) {
 	return model, true
 }
 
-// readCPUModel reads and parses /proc/cpuinfo for the make/model string.
+// cachedCPUModel memoizes readCPUModel's result. The make/model string is
+// fixed hardware identity for the process's lifetime — unlike cpu MHz or the
+// cpufreq files, it never changes tick to tick — so re-reading and
+// re-parsing all of /proc/cpuinfo (which grows with core count) every poll
+// was pure waste. Only a successful read is cached; a transient failure (or
+// a genuinely model-less /proc/cpuinfo) leaves it empty so the next tick
+// tries again instead of freezing in the "unavailable" state forever.
+var cachedCPUModel string
+
+// readCPUModel reads and parses /proc/cpuinfo for the make/model string,
+// caching the result after the first successful read.
 func readCPUModel() (string, bool) {
-	data, err := os.ReadFile("/proc/cpuinfo")
-	if err != nil {
+	if cachedCPUModel != "" {
+		return cachedCPUModel, true
+	}
+	data, ok := readSmallFile("/proc/cpuinfo")
+	if !ok {
 		return "", false
 	}
-	return parseCPUModel(string(data))
+	model, ok := parseCPUModel(data)
+	if !ok {
+		return "", false
+	}
+	cachedCPUModel = model
+	return model, true
 }
 
 // parseCPUInfoMHz extracts the "cpu MHz" field of /proc/cpuinfo, used as a
@@ -56,11 +73,11 @@ func parseCPUInfoMHz(cpuinfo string) (float64, bool) {
 // readSysFreqKHz reads a cpufreq sysfs file (a single integer in kHz) such
 // as scaling_cur_freq or cpuinfo_max_freq.
 func readSysFreqKHz(path string) (float64, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
+	data, ok := readSmallFile(path)
+	if !ok {
 		return 0, false
 	}
-	v, err := strconv.ParseFloat(strings.TrimSpace(string(data)), 64)
+	v, err := strconv.ParseFloat(strings.TrimSpace(data), 64)
 	if err != nil {
 		return 0, false
 	}
@@ -91,9 +108,9 @@ func readCPUFreqMHz() (curMHz, maxMHz float64, haveCur, haveMax bool) {
 
 // readCPUInfoMHz reads and parses /proc/cpuinfo for the "cpu MHz" fallback.
 func readCPUInfoMHz() (float64, bool) {
-	data, err := os.ReadFile("/proc/cpuinfo")
-	if err != nil {
+	data, ok := readSmallFile("/proc/cpuinfo")
+	if !ok {
 		return 0, false
 	}
-	return parseCPUInfoMHz(string(data))
+	return parseCPUInfoMHz(data)
 }
