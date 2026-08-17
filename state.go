@@ -524,9 +524,10 @@ func killResultMessage(pid int, name, sigName string, err error) string {
 }
 
 // startDetailView opens the process-details popup for the process currently
-// under the cursor, snapshotting its data so a poll tick mid-popup can't
-// retarget it — same rationale as startKillConfirm. Returns false (no-op)
-// if the list is empty or the cursor is out of range.
+// under the cursor, pinning it to that process's PID so a poll tick mid-popup
+// refreshes its values (see refreshDetailView) without ever retargeting to a
+// different process — same identity-pinning rationale as startKillConfirm.
+// Returns false (no-op) if the list is empty or the cursor is out of range.
 func (s *monitorState) startDetailView() bool {
 	if s.cursor < 0 || s.cursor >= len(s.currentProcs) {
 		return false
@@ -534,6 +535,35 @@ func (s *monitorState) startDetailView() bool {
 	s.detailData = buildProcessDetail(s.currentProcs[s.cursor])
 	s.detailMode = true
 	return true
+}
+
+// refreshDetailView re-fetches detailData against a freshly polled process
+// list so the open popup's live fields (CPU%, RSS/VIRT/SHR, TIME+, ...) keep
+// updating each tick instead of freezing at whatever they were when Enter
+// was pressed. Looks its target up by PID rather than cursor position, since
+// sorting/filtering between polls can move or hide the original row. No-op
+// if the popup isn't open. If the pinned PID is no longer among the polled
+// processes (exited, or a transient scan race), it falls back to the last
+// known table fields and lets buildProcessDetail's own /proc reads report
+// the process as gone, same as any other stale-PID lookup.
+func (s *monitorState) refreshDetailView(procs []Process) {
+	if !s.detailMode {
+		return
+	}
+	p := Process{
+		PID:    s.detailData.PID,
+		Name:   s.detailData.Name,
+		Cmd:    s.detailData.Cmd,
+		RSSKb:  s.detailData.RSSKb,
+		CPUPct: s.detailData.CPUPct,
+	}
+	for _, cand := range procs {
+		if cand.PID == s.detailData.PID {
+			p = cand
+			break
+		}
+	}
+	s.detailData = buildProcessDetail(p)
 }
 
 // closeDetailView closes the process-details popup (Enter/Esc/q).

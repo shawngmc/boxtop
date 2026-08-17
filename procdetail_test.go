@@ -37,30 +37,50 @@ func TestResolveUser(t *testing.T) {
 	}
 }
 
-func TestParseStatNice(t *testing.T) {
+func TestParseStatExtra(t *testing.T) {
 	tests := []struct {
-		name     string
-		raw      string
-		wantNice int
-		wantOK   bool
+		name         string
+		raw          string
+		wantPriority int
+		wantNice     int
+		wantCPUSecs  float64
+		wantOK       bool
 	}{
 		// Fields after ')': state ppid pgrp session tty_nr tpgid flags minflt
 		// cminflt majflt cmajflt utime stime cutime cstime priority nice ...
-		// — nice is the 17th token (index 16), here -5.
-		{"normal", "1234 (bash) S 1 1234 1234 34816 1234 4194304 100 0 200 0 1500 300 40 20 20 -5 1 0 987654 4194304 600 0", -5, true},
-		{"too few fields", "42 (bash) S 1 2 3", 0, false},
-		{"no parens", "42 bash S 1 2 3", 0, false},
+		// — utime=1500, stime=300 (18 CPU secs at clkTck=100), priority=20
+		// (index 15), nice=-5 (index 16).
+		{"normal", "1234 (bash) S 1 1234 1234 34816 1234 4194304 100 0 200 0 1500 300 40 20 20 -5 1 0 987654 4194304 600 0", 20, -5, 18, true},
+		{"too few fields", "42 (bash) S 1 2 3", 0, 0, 0, false},
+		{"no parens", "42 bash S 1 2 3", 0, 0, 0, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotNice, gotOK := parseStatNice(tc.raw)
+			got, gotOK := parseStatExtra(tc.raw)
 			if gotOK != tc.wantOK {
 				t.Errorf("ok = %v, want %v", gotOK, tc.wantOK)
 			}
-			if gotOK && gotNice != tc.wantNice {
-				t.Errorf("nice = %d, want %d", gotNice, tc.wantNice)
+			if gotOK && (got.Priority != tc.wantPriority || got.Nice != tc.wantNice || got.CPUTimeSecs != tc.wantCPUSecs) {
+				t.Errorf("parseStatExtra(%q) = %+v, want priority=%d nice=%d cpuSecs=%v", tc.raw, got, tc.wantPriority, tc.wantNice, tc.wantCPUSecs)
 			}
 		})
+	}
+}
+
+func TestParseStatmShared(t *testing.T) {
+	tests := []struct {
+		in     string
+		want   int64
+		wantOK bool
+	}{
+		{"1000 500 300 10 0 200 0", 300 * int64(pageSizeKB), true},
+		{"1000 500", 0, false},
+		{"", 0, false},
+	}
+	for _, tc := range tests {
+		if got, ok := parseStatmShared(tc.in); ok != tc.wantOK || got != tc.want {
+			t.Errorf("parseStatmShared(%q) = (%d, %v), want (%d, %v)", tc.in, got, ok, tc.want, tc.wantOK)
+		}
 	}
 }
 

@@ -515,6 +515,9 @@ func collectFrame(state *monitorState) (frameData, error) {
 	// A fresh poll yields a brand-new unsorted slice, so the next drawFrame
 	// must sort it regardless of whether the sort column changed.
 	state.sortDirty = true
+	// This is the one place per tick a fresh process list exists, so it's
+	// also the right place to keep an open detail popup's values current.
+	state.refreshDetailView(procs)
 	var totalRSSKb int64
 	for _, p := range procs {
 		totalRSSKb += p.RSSKb
@@ -873,15 +876,16 @@ func drawFrame(screen tcell.Screen, state *monitorState, data frameData) {
 // tcell.Screen.
 func detailLines(d ProcessDetail) []string {
 	lines := []string{
-		fmt.Sprintf("PID:     %d", d.PID),
-		fmt.Sprintf("Name:    %s", d.Name),
+		detailField("PID:", "%d", d.PID),
+		detailField("Name:", "%s", d.Name),
 	}
 	if d.HaveExtra {
 		lines = append(lines,
-			fmt.Sprintf("PPID:    %d", d.PPID),
-			fmt.Sprintf("State:   %s", d.State),
-			fmt.Sprintf("User:    %s", d.User),
-			fmt.Sprintf("Threads: %d      Nice: %d", d.Threads, d.Nice),
+			detailField("PPID:", "%d", d.PPID),
+			detailField("User:", "%s", d.User),
+			detailField("State:", "%s", d.State),
+			detailField("Priority:", "Effective(PR):%d UserHint(NI):%d", d.Priority, d.Nice),
+			detailField("Threads:", "%d", d.Threads),
 		)
 	} else {
 		lines = append(lines, "(further details unavailable — process may have exited)")
@@ -891,21 +895,58 @@ func detailLines(d ProcessDetail) []string {
 	if d.CPUPct != nil {
 		cpuText = fmt.Sprintf("%.1f%%", *d.CPUPct)
 	}
+	memText := "--"
+	if d.HaveMemPct {
+		memText = fmt.Sprintf("%.1f%%", d.MemPct)
+	}
 	lines = append(lines,
-		fmt.Sprintf("CPU%%:    %s", cpuText),
-		fmt.Sprintf("RSS:     %.1f MB", float64(d.RSSKb)/1024),
+		detailField("CPU%:", "%-8s MEM%%: %-8s TIME+: %s", cpuText, memText, formatCPUTime(d.CPUTimeSecs)),
+		detailField("RES:", "%.1f MB", float64(d.RSSKb)/1024),
 	)
 	if d.HaveExtra {
-		lines = append(lines,
-			fmt.Sprintf("VmSize:  %.1f MB", float64(d.VmSizeKb)/1024),
-			fmt.Sprintf("VmSwap:  %.1f MB", float64(d.VmSwapKb)/1024),
-		)
+		lines = append(lines, detailField("VIRT:", "%.1f MB", float64(d.VmSizeKb)/1024))
+	}
+	if d.HaveShared {
+		lines = append(lines, detailField("SHR:", "%.1f MB", float64(d.SharedKb)/1024))
+	}
+	if d.HaveExtra {
+		lines = append(lines, detailField("VmSwap:", "%.1f MB", float64(d.VmSwapKb)/1024))
 	}
 	if d.HaveExePath {
-		lines = append(lines, fmt.Sprintf("Exe:     %s", d.ExePath))
+		lines = append(lines, detailField("Exe:", "%s", d.ExePath))
 	}
-	lines = append(lines, fmt.Sprintf("Cmd:     %s", d.Cmd))
+	lines = append(lines, detailField("Cmd:", "%s", d.Cmd))
 	return lines
+}
+
+// detailLabelWidth is the fixed column the value in every detailLines row
+// starts at. Set to fit "Priority:", the longest label — pad narrower labels
+// out to it so values line up regardless of label length, rather than
+// hand-counting spaces per Sprintf (which drifted out of sync last time).
+const detailLabelWidth = len("Priority:") + 1
+
+// detailField renders one "Label:   value" row, padding label to
+// detailLabelWidth so values across every row start in the same column.
+func detailField(label, format string, args ...any) string {
+	return fmt.Sprintf("%-*s", detailLabelWidth, label) + fmt.Sprintf(format, args...)
+}
+
+// formatCPUTime renders cumulative CPU seconds the way top's TIME+ column
+// does: MM:SS.hh (hundredths) normally, switching to H:MM:SS once the total
+// reaches an hour so the field doesn't grow unreadably wide for long-lived
+// processes.
+func formatCPUTime(secs float64) string {
+	total := int64(secs * 100)
+	cs := total % 100
+	totalSecs := total / 100
+	s := totalSecs % 60
+	totalMins := totalSecs / 60
+	m := totalMins % 60
+	h := totalMins / 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d.%02d", m, s, cs)
 }
 
 // drawPopupBox draws a bordered box's frame (corners, edges, blanked

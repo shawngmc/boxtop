@@ -240,13 +240,13 @@ func TestDrawFrameDetailPopup(t *testing.T) {
 	w, h := screen.Size()
 	for _, want := range []string{
 		"Process Detail: PID 4242",
-		"Name:    sleep",
-		"PPID:    1",
-		"State:   Sleeping",
-		"User:    root (uid 0)",
-		"CPU%:    3.5%",
-		"RSS:     2.0 MB",
-		"Cmd:     sleep 300",
+		"Name:     sleep",
+		"PPID:     1",
+		"State:    Sleeping",
+		"User:     root (uid 0)",
+		"CPU%:     3.5%",
+		"RES:      2.0 MB",
+		"Cmd:      sleep 300",
 		"Enter/Esc/q: close",
 	} {
 		if _, ok := findRow(screen, w, h, want); !ok {

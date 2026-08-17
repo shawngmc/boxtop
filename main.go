@@ -215,6 +215,14 @@ func handleEvent(screen tcell.Screen, state *monitorState, ev tcell.Event) (redr
 		}
 		return redraw || clearedStatus, quit
 	case *tcell.EventMouse:
+		// A modal popup (kill-confirm, cgroup picker, process detail, help)
+		// has exclusive keyboard focus above — see the EventKey branch's
+		// mode checks — so mouse input over the table it's drawn on top of
+		// must be blocked the same way, or a click "through" the popup can
+		// move the cursor/sort column on rows the user can't even see.
+		if state.killConfirmMode || state.cgroupSelectMode || state.detailMode || state.helpMode {
+			return false, false
+		}
 		btns := e.Buttons()
 		switch {
 		case btns&tcell.WheelUp != 0:

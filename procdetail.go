@@ -31,6 +31,15 @@ type ProcessDetail struct {
 	VmSizeKb  int64
 	VmSwapKb  int64
 	Nice      int
+	Priority  int
+
+	SharedKb   int64
+	HaveShared bool
+
+	MemPct     float64
+	HaveMemPct bool
+
+	CPUTimeSecs float64
 
 	ExePath     string
 	HaveExePath bool
@@ -78,8 +87,20 @@ func buildProcessDetail(p Process) ProcessDetail {
 		d.User = resolveUser(status["Uid"])
 	}
 
-	if nice, ok := readProcNice(p.PID); ok {
-		d.Nice = nice
+	if extra, ok := readProcStatExtra(p.PID); ok {
+		d.Nice = extra.Nice
+		d.Priority = extra.Priority
+		d.CPUTimeSecs = extra.CPUTimeSecs
+	}
+
+	if shared, ok := readProcStatm(p.PID); ok {
+		d.SharedKb = shared
+		d.HaveShared = true
+	}
+
+	if mem, ok := readHostMeminfo(); ok && mem.totalKB > 0 {
+		d.MemPct = float64(p.RSSKb) / float64(mem.totalKB) * 100
+		d.HaveMemPct = true
 	}
 
 	if exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", p.PID)); err == nil {
@@ -152,33 +173,76 @@ func resolveUser(uidField string) string {
 	return "uid " + uid
 }
 
-// readProcNice reads the nice value (stat field 19) out of
-// /proc/<pid>/stat, applying the same "split after the last ')'" trick as
-// parseStatNameCPU since comm can contain spaces/parens.
-func readProcNice(pid int) (int, bool) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return 0, false
-	}
-	return parseStatNice(string(data))
+// procStatExtra holds the /proc/<pid>/stat fields the detail popup needs
+// beyond what the hot-path parseStatNameCPU already captures per tick:
+// scheduling priority, nice value, and cumulative CPU time (top's PR, NI,
+// and TIME+). Read only when the popup opens, via a second /stat read,
+// rather than threading these through Process and paying for them on every
+// poll tick for every process.
+type procStatExtra struct {
+	Priority    int
+	Nice        int
+	CPUTimeSecs float64
 }
 
-// parseStatNice is the pure parser behind readProcNice, split out for unit
-// testing against fixture lines without touching /proc. Field 19 (nice) is
-// index 16 once field 3 (state) is index 0 — same indexing scheme as
-// parseStatNameCPU's utime/stime/rss.
-func parseStatNice(raw string) (int, bool) {
+// readProcStatExtra reads /proc/<pid>/stat and extracts the fields above,
+// applying the same "split after the last ')'" trick as parseStatNameCPU
+// since comm can contain spaces/parens.
+func readProcStatExtra(pid int) (procStatExtra, bool) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return procStatExtra{}, false
+	}
+	return parseStatExtra(string(data))
+}
+
+// parseStatExtra is the pure parser behind readProcStatExtra, split out for
+// unit testing against fixture lines without touching /proc. utime/stime are
+// fields 14/15 (indices 11/12), priority is field 18 (index 15), and nice is
+// field 19 (index 16) once field 3 (state) is index 0 — same indexing scheme
+// as parseStatNameCPU's utime/stime/rss.
+func parseStatExtra(raw string) (procStatExtra, bool) {
 	rp := strings.LastIndexByte(raw, ')')
 	if rp == -1 || rp+1 >= len(raw) {
-		return 0, false
+		return procStatExtra{}, false
 	}
 	fields := strings.Fields(raw[rp+1:])
 	if len(fields) <= 16 {
-		return 0, false
+		return procStatExtra{}, false
 	}
-	n, err := strconv.ParseInt(fields[16], 10, 64)
+	utime, e1 := strconv.ParseInt(fields[11], 10, 64)
+	stime, e2 := strconv.ParseInt(fields[12], 10, 64)
+	priority, e3 := strconv.ParseInt(fields[15], 10, 64)
+	nice, e4 := strconv.ParseInt(fields[16], 10, 64)
+	if e1 != nil || e2 != nil || e3 != nil || e4 != nil {
+		return procStatExtra{}, false
+	}
+	return procStatExtra{
+		Priority:    int(priority),
+		Nice:        int(nice),
+		CPUTimeSecs: float64(utime+stime) / clkTck,
+	}, true
+}
+
+// readProcStatm reads /proc/<pid>/statm and returns the shared-page count
+// (field 3, top's SHR) converted to kB.
+func readProcStatm(pid int) (int64, bool) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", pid))
 	if err != nil {
 		return 0, false
 	}
-	return int(n), true
+	return parseStatmShared(string(data))
+}
+
+// parseStatmShared is the pure parser behind readProcStatm.
+func parseStatmShared(raw string) (int64, bool) {
+	fields := strings.Fields(raw)
+	if len(fields) < 3 {
+		return 0, false
+	}
+	pages, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return pages * int64(pageSizeKB), true
 }
