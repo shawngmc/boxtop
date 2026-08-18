@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
@@ -903,7 +904,14 @@ func TestCollectFrameAppendsSystemRAMHistory(t *testing.T) {
 // systemCPUHistory: sampleHostCPUPct returns no percentage on its first
 // call (no baseline yet, see TestSampleHostCPUPctBaseline in
 // state_test.go), so collectFrame must skip that tick's push rather than
-// record a synthetic 0 — a fake dip that isn't a real sample.
+// record a synthetic 0 — a fake dip that isn't a real sample. The two
+// collectFrame calls are separated by a sleep past one jiffy (10ms at the
+// standard CLK_TCK=100) so the second call's /proc/stat read is guaranteed
+// to observe a nonzero delta from the first — without it, two calls placed
+// back-to-back can land within the same jiffy and totalDelta stays 0,
+// making sampleHostCPUPct return ok=true, pct=nil forever (the same
+// same-jiffy hazard TestSampleHostCPUPctBaseline calls out, but that test
+// sidesteps it by not asserting a non-nil result on its second call).
 func TestCollectFrameGatesCPUHistoryOnBaseline(t *testing.T) {
 	state := newMonitorState()
 
@@ -913,6 +921,8 @@ func TestCollectFrameGatesCPUHistoryOnBaseline(t *testing.T) {
 	if got := len(state.systemCPUHistory.recent(sparkHistoryLen)); got != 0 {
 		t.Errorf("systemCPUHistory length after 1st collectFrame = %d, want 0 (no baseline yet)", got)
 	}
+
+	time.Sleep(15 * time.Millisecond)
 
 	if _, err := collectFrame(state); err != nil {
 		t.Fatalf("collectFrame: %v", err)
