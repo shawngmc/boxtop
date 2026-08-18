@@ -1,0 +1,26 @@
+#!/bin/sh
+# Mirrors .github/workflows/ci.yml so problems are caught before push.
+# Install with: git config core.hooksPath .githooks
+
+set -e
+
+staged_go_files="$(git diff --cached --name-only --diff-filter=ACM -- '*.go')"
+
+if [ -n "$staged_go_files" ]; then
+    fmt_out="$(gofmt -l $staged_go_files)"
+    if [ -n "$fmt_out" ]; then
+        echo "The following staged files are not gofmt'd:"
+        echo "$fmt_out"
+        echo "Run: gofmt -w $fmt_out"
+        exit 1
+    fi
+fi
+
+echo "Running go vet..."
+go vet ./...
+
+echo "Running go build..."
+go build -o /dev/null .
+
+echo "Running go test..."
+go test ./...
