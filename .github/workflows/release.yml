@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write # required for keyless cosign signing via GitHub OIDC
 
 jobs:
   build:
@@ -49,6 +50,16 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign checksums (keyless)
+        run: cosign sign-blob --yes --bundle dist/SHA256SUMS.sigstore.json dist/SHA256SUMS
 
       - name: Create pre-release
         uses: softprops/action-gh-release@v2
