@@ -1,43 +1,28 @@
 # boxtop 
 
-A tool to measure cgroup-based workspaces (docker, k8s, etc.).
+A top-like tool to measure cgroup-based workspaces (docker, k8s, etc.), focused
+on usability and process control.
 
 Features:
-- Side-by-side cgroup and system-wide RAM/CPU/Swap meters in the top bar,
-  so a confined workload's own usage and the host it's sharing are both
-  visible at a glance
-- Swap accounting: cgroup swap (`memory.swap.current`/`memory.swap.max` on
-  v2, derived from `memory.memsw.*` on v1) and system-wide swap
-  (`/proc/meminfo`'s `SwapTotal`/`SwapFree`), each with a graceful
-  "unavailable"/"no swap configured" state when swap accounting or swap
-  itself isn't present
-- Mouse support for column sorting and scrolling via wheel
-- Falls back to host constraints if not constrained/in cgroup
-- Colorblind mode via `--colorblind`
+- CGroup-relevant accounting for processes
+- Side-by-side cgroup and system-wide RAM/CPU/Swap meters in the top bar
 - Surfaces the cgroup's OOM-kill count, when available, so a kernel-reaped
   process shows up even after the RAM bar drops back under 100%
-- Incremental name/command filter: press `/` to type, `Enter` to apply,
-  `Esc` to clear — or start pre-filtered with `--filter`/`-f`
-- Process details popup: press `Enter` on a selected row for PPID, state,
-  owning user, thread count, nice value, VmSize/VmSwap, and the resolved
-  exe path; `Enter`/`Esc`/`q` closes it
-- Keybinding help screen: press `h` or `?` for an overlay listing every key
-  and mouse action; `Enter`/`Esc`/`q` closes it
-- Non-interactive mode: prints one snapshot (header, full process list,
-  simplified footer) and exits instead of running the TUI — auto-enabled
-  when stdin or stdout isn't a terminal (piped/redirected), or forced with
-  `--non-interactive`/`-n`
-- `--cgroup <name-or-path>` points boxtop at any cgroup on the host instead
-  of its own — e.g. `--cgroup docker/1a2b3c4d5e6f` or a full
-  `/sys/fs/cgroup/...` path — so it can run on the host and watch a
-  container's RAM/CPU/Swap meters without `docker exec`-ing into it (the
-  process list is still the host's own `/proc`, unscoped by `--cgroup`);
-  `--list-cgroups` prints every cgroup name found on the host to help pick
-  one
-- Cgroup picker: press `g` to switch the monitored cgroup without
-  restarting — search/filter the live host list, `Enter` to apply
-  immediately (no waiting for the next refresh tick), `Esc` to cancel
-
+- Usability
+  - Mouse support for sorting, scrolling and selection
+  - Colorblind mode via `--colorblind`
+  - Non-interactive mode (single snapshot) - auto-enabled when stdin or stdout
+    isn't a terminal (piped/redirected), or forced with `--non-interactive`/`-n`
+- Tools
+  - Filtering via `/` or pre-apply with `--filter`/`-f`
+  - Kill processes with `k`
+  - Process details vai `Enter`
+- CGroups
+  - In container, limited to container's cgroups
+  - Select at launch with `--cgroup <name-or-path>`
+  - List via CLI with `--list-cgroups`
+  - Interactive switching via `g`
+  - Hide cgroup contraints if not in cgroup
 
 
 ## Building
@@ -46,12 +31,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, and release
 instructions.
 
 ## TODOs
+- Add 'niceness' adjustment
 - **No cache-vs-anon breakdown.** `memory.stat`'s `anon`/`file` split would
   let users tell reclaimable page cache apart from a real leak, instead of
   just disclaiming the ambiguity in the footer line.
-- **No trend/history view.** A small sparkline of RAM%/CPU% over the last
-  N samples would show a slow climb toward the limit, not just the
-  instantaneous value.
 - **Kernel thread cmdline reads are wasted.** `cmdFor` in `proc.go` does a
   full `open`/`read`/`close` of `/proc/<pid>/cmdline` on every cache miss,
   which always comes back empty for kernel threads. The `flags` field

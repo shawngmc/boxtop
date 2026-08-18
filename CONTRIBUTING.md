@@ -69,6 +69,36 @@ go test -tags integration -run TestCgroupDetectionInContainer -v ./integration
 It skips itself (rather than failing) if `docker` isn't on `PATH` or the
 daemon isn't reachable.
 
+## Benchmarking
+
+`bench_test.go` at the repo root has `go test -bench` micro-benchmarks for
+the hot paths (per-tick polling, drawing, cold-start-to-first-paint) —
+`ns/op` is the CPU story, `B/op`/`allocs/op` (via `-benchmem`) is the
+predictable per-op memory story:
+
+```sh
+go test -bench=. -benchmem .
+```
+
+`cmd/boxbench` is a separate black-box harness that builds and runs the
+*real* `boxtop` binary to measure what a micro-benchmark can't: process
+startup wall time, time to first output, peak RSS, and CPU time (via
+`getrusage`), alongside a summary of the `bench_test.go` results above. It
+never touches git state itself — comparing two branches/versions is
+save-then-compare:
+
+```sh
+go run ./cmd/boxbench run --out base.json      # on the baseline branch
+git checkout my-feature
+go run ./cmd/boxbench run --out feature.json   # on the candidate branch
+go run ./cmd/boxbench compare base.json feature.json
+```
+
+`boxbench run` alone (no `--out`) still prints its human-readable summary
+to stdout, which is enough for a one-off "how heavy is this right now"
+check. See `go run ./cmd/boxbench run -h` for flags (`--runs`,
+`--bench-count`, `--interval`, `--label`).
+
 ## Cutting a pre-release
 
 Releases are built and published automatically by the
