@@ -16,19 +16,18 @@ const (
 	pidWidth  = 7
 )
 
-// drawText writes a string into the screen buffer starting at (x, y),
-// advancing by each rune's display width (1 for most runes, 2 for wide
-// East Asian/emoji ones — tcell's SetContent docs warn that placing
-// content in the second cell of a wide rune has "undefined effects"), and
-// returns the x position just past the text — the tcell equivalent of
-// appending a colored substring to render()'s frame string in the Python
-// version.
+// drawText writes a string into the screen buffer starting at (x, y) in a
+// single tcell call, and returns the x position just past the text — the
+// tcell equivalent of appending a colored substring to render()'s frame
+// string in the Python version. It used to loop per-rune over the
+// deprecated SetContent (each call re-encoding a one-rune []rune slice to
+// a string, grapheme-segmenting it, and locking the screen); PutStrStyled
+// does the same grapheme segmentation and width accounting internally but
+// under a single lock over the whole string, which is what tcell's own
+// SetContent doc now recommends and is dramatically cheaper per drawFrame.
 func drawText(screen tcell.Screen, x, y int, s string, style tcell.Style) int {
-	for _, r := range s {
-		screen.SetContent(x, y, r, nil, style)
-		x += runewidth.RuneWidth(r)
-	}
-	return x
+	screen.PutStrStyled(x, y, s, style)
+	return x + runewidth.StringWidth(s)
 }
 
 // eighthBlocks holds the Unicode "eighth block" runes for 1/8 through 8/8
@@ -101,7 +100,7 @@ func drawBar(screen tcell.Screen, x, y, length int, frac float64, stops []colorS
 		if ch != ' ' {
 			cellStyle = style
 		}
-		screen.SetContent(x+i, y, ch, nil, cellStyle)
+		screen.Put(x+i, y, string(ch), cellStyle)
 	}
 	return x + length
 }
@@ -223,11 +222,11 @@ func drawSparkline(screen tcell.Screen, x, y, width int, samples []float64, stop
 		samples = samples[len(samples)-width:]
 		pad = 0
 	}
-	for i := 0; i < pad; i++ {
-		screen.SetContent(x+i, y, ' ', nil, emptyBarStyle)
+	if pad > 0 {
+		screen.PutStrStyled(x, y, strings.Repeat(" ", pad), emptyBarStyle)
 	}
 	for i, s := range samples {
-		screen.SetContent(x+pad+i, y, sparkGlyph(s), nil, gradientStyle(s, stops))
+		screen.Put(x+pad+i, y, string(sparkGlyph(s)), gradientStyle(s, stops))
 	}
 }
 
@@ -955,7 +954,9 @@ func formatCPUTime(secs float64) string {
 // drawDetailPopup/drawHelpPopup/drawCgroupSelectPopup so the border-drawing
 // loop isn't tripled across them.
 func drawPopupBox(screen tcell.Screen, x0, y0, boxW, boxH, w, h int, style tcell.Style) {
+	var row strings.Builder
 	for y := y0; y < y0+boxH && y < h; y++ {
+		row.Reset()
 		for x := x0; x < x0+boxW && x < w; x++ {
 			ch := ' '
 			switch {
@@ -972,8 +973,9 @@ func drawPopupBox(screen tcell.Screen, x0, y0, boxW, boxH, w, h int, style tcell
 			case x == x0 || x == x0+boxW-1:
 				ch = '│'
 			}
-			screen.SetContent(x, y, ch, nil, style)
+			row.WriteRune(ch)
 		}
+		screen.PutStrStyled(x0, y, row.String(), style)
 	}
 }
 
