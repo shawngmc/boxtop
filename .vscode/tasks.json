@@ -1,0 +1,56 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build",
+			"type": "shell",
+			"command": "go build -o boxtop .",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"problemMatcher": ["$go"],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "Build (slim)",
+			"type": "shell",
+			"command": "scripts/build.sh",
+			"group": "build",
+			"problemMatcher": ["$go"],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "Test",
+			"type": "shell",
+			"command": "go test ./...",
+			"group": {
+				"kind": "test",
+				"isDefault": true
+			},
+			"problemMatcher": ["$go"],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "Test (integration)",
+			"type": "shell",
+			"command": "go test -tags integration -run TestCgroupDetectionInContainer -v ./integration",
+			"group": "test",
+			"problemMatcher": ["$go"],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared"
+			},
+			"detail": "Requires Docker; shells out to build a cgroup-limited container."
+		}
+	]
+}
