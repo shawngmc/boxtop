@@ -41,6 +41,7 @@ subsystem — new screen, new interaction model, or both).
 | H1 | Growth-rate sort (per-process history) | Part 6, smaller | M | Medium–High | `proc.go`, `state.go`, `render.go` |
 | H2 | Black-box recorder anchored to OOM kills | Part 6, headline | XL | High (distinctive) | new `recorder.go`, `state.go`, `render.go`, `main.go` |
 | B1 | Prometheus `/metrics` endpoint (`--listen`) | Part 8 tier 2 | L | Very High (multiplies everything) | new `metrics.go`, `main.go` |
+| B1a | mTLS mode for `--listen` (sub-item of B1) | follow-up | S–M | Medium (hardening for anyone binding beyond loopback) | `metrics.go`, `main.go`, new key/cert-store helper |
 | B2 | Incident narration | Part 8 tier 1 | L | Very High, hard dependencies | new `narrate.go`, `state.go`, `render.go` |
 | X1 | Multi-cgroup live dashboard | Part 3.2 | XL | High, big standalone bet | new file(s), `main.go`, `state.go`, `render.go`, `cgroup.go` |
 | X2 | Parallel `/proc` scan | Part 2, conditional | L | Low unless profiling says otherwise | `proc.go` |
@@ -117,6 +118,58 @@ Don't write this twice: factor a single internal "extract metrics from
 computed. B1 also depends operationally on F1 (SIGTERM handling) — an HTTP
 listener needs the same graceful-shutdown path a signal handler gives you,
 so land F1 before B1, not after.
+
+**B1a — mTLS mode, sized.** Go's stdlib `crypto/tls`/`net/http` does the
+actual TLS/mTLS work — no CGO, no new dependency, fully compatible with the
+static-binary constraint. On top of B1's own effort this is incremental,
+sized **S–M**: it's config wiring around a handshake stdlib already
+implements, not new engineering.
+
+Design notes, folded in from discussion rather than left implicit:
+
+- **HTTP stays the default.** `--listen` alone binds `127.0.0.1` only,
+  plain HTTP, zero config — matching every other feature in boxtop.
+  TLS/mTLS is additive flags, not a mode swap, and binding beyond loopback
+  should require an explicit opt-in separate from enabling TLS.
+- **CA optional, not absent.** The zero-config default path is pinned
+  certs, not PKI: boxtop generates its own self-signed keypair on first use
+  (Go's stdlib has straightforward self-signed cert generation) and
+  persists it — naturally alongside C1's config directory once that
+  exists. Client trust works the same way `authorized_keys` does: instead
+  of validating against a CA pool, a custom
+  `VerifyPeerCertificate`/`VerifyConnection` callback checks the presented
+  client cert's fingerprint against a small trusted-fingerprint list boxtop
+  reads from config/flag. This is what makes trying it require zero PKI —
+  no CA, no issuance workflow, nothing to stand up just to test the
+  feature.
+  But this must not be the *only* path: anyone who already runs CA
+  infrastructure (common in real deployments) needs to supply their own
+  server cert/key and a CA bundle to validate client certs against, via
+  the same `--tls-cert`/`--tls-key`/`--tls-client-ca` flags a
+  conventional implementation would use. `tls.Config` supports both
+  `ClientCAs` (pool-based) and a custom `VerifyPeerCertificate` (pinning)
+  side by side without conflict, so this isn't an either/or in the
+  implementation — it's two ways to populate trust, selected by which
+  flags are set. Pinning is the friendly default; CA is a first-class
+  option, not a workaround.
+- **Ergonomics matter as much as the crypto.** The whole point of the
+  pinned-cert design is that trying it shouldn't require the user to have
+  ever run `openssl`. First run should print the server's own fingerprint
+  plainly (the same UX SSH host keys use) so it can be pinned on the
+  scraping side, and errors (untrusted client, missing/corrupt key file)
+  need to say exactly what's wrong and what to do about it, not surface a
+  raw TLS handshake error.
+
+**Related: a `nolisten` build.** Worth keeping in mind while building B1 —
+a security-conscious build that excludes all networking code (`--listen`,
+TLS, the metrics HTTP server) entirely via a Go build tag, so the resulting
+binary provably contains no listener regardless of flags. This is a strong
+argument for keeping B1/B1a's code isolated to their own file(s) (already
+the plan — `metrics.go`) rather than letting HTTP-serving logic leak into
+`main.go` or `render.go`, since a clean build-tag boundary needs the code
+it's excluding to live somewhere excludable. Not scheduled as its own
+backlog item yet — a structural constraint to honor when B1 is built, not
+a separate task.
 
 ## Phased order
 
