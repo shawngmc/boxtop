@@ -18,7 +18,6 @@ subsystem — new screen, new interaction model, or both).
 
 | ID | Task | Source | LoE | Value | Files touched |
 |---|---|---|---|---|---|
-| Q1 | README kill-key fix | Part 4.1 | XS | High (fixes live misinformation) | `README.md` |
 | Q2 | `GOGC`/`GOMEMLIMIT` tuning | Part 1.1 | XS | Medium | `main.go` |
 | Q3 | `GOMAXPROCS` cap | Part 1.3 | XS | Low–Medium | `main.go` |
 | Q4 | CI: `go-version-file: go.mod` | Part 2 tooling | XS | Low | `ci.yml`, `release.yml` |
@@ -27,10 +26,10 @@ subsystem — new screen, new interaction model, or both).
 | F2 | Goroutine panic-recovery shim | Part 2 stability | XS–S | Low–Medium | `main.go` |
 | F3 | Fuzz tests (`/proc`-stat, cgroup parsers) | Part 2 stability | S–M | Medium | `proc_test.go`, `cgroup_test.go` |
 | F4 | Cmdline redaction (secrets in argv) | Part 8 gap | S–M | High (blocks C-series, D2) | `proc.go` or new `redact.go` |
-| C1 | Persisted configuration (config file + precedence) | Part 4.2 | M–L | High (compounds every run) | `main.go`, new `config.go`, `state.go` |
-| C2 | Live refresh-interval adjustment | Part 4.3 | S | Medium | `main.go`, `state.go`, help text |
-| C3 | Promote positional interval arg to a flag | Part 4.5 | XS–S | Low | `main.go` |
-| C4 | `NO_COLOR` / monochrome mode | Parts 4.4 & 5 | S | Medium (ergonomics + accessibility) | `colors.go`, `main.go` |
+| C1 | Persisted configuration (config file + precedence) | Part 4.1 | M–L | High (compounds every run) | `main.go`, new `config.go`, `state.go` |
+| C2 | Live refresh-interval adjustment | Part 4.2 | S | Medium | `main.go`, `state.go`, help text |
+| C3 | Promote positional interval arg to a flag | Part 4.4 | XS–S | Low | `main.go` |
+| C4 | `NO_COLOR` / monochrome mode | Parts 4.3 & 5 | S | Medium (ergonomics + accessibility) | `colors.go`, `main.go` |
 | G1 | PSI integration (`memory.pressure`/`cpu.pressure`) | Part 3.1 | M | High | `cgroup.go`, `render.go`, `noninteractive.go` |
 | G2 | `memory.events` reader (max/high/oom) | Part 8 tier 1 prereq | S–M | Medium alone, High as D3 input | `cgroup.go` |
 | D1 | Streaming plain-text mode (`--stream`) | Part 5 | M | High | `noninteractive.go`, `main.go` |
@@ -177,7 +176,7 @@ Phases group work into what to actually pick up next, folding in the
 bundle guidance above. Within a phase, order is low-risk-first; across
 phases, later ones depend on earlier ones landing.
 
-**Phase 0 — quick wins.** Q1–Q5. Trivial, independent, no reason to delay
+**Phase 0 — quick wins.** Q2–Q5. Trivial, independent, no reason to delay
 any of them. Ship as a handful of small PRs, any order.
 
 **Phase 1 — foundational hardening.** F1, F2, F3, F4. F1 is the one

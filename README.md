@@ -15,8 +15,8 @@ Features:
     isn't a terminal (piped/redirected), or forced with `--non-interactive`/`-n`
 - Tools
   - Filtering via `/` or pre-apply with `--filter`/`-f`
-  - Kill processes with `k`
-  - Process details vai `Enter`
+  - Kill processes with `x`
+  - Process details via `Enter`
 - CGroups
   - In container, limited to container's cgroups
   - Select at launch with `--cgroup <name-or-path>`

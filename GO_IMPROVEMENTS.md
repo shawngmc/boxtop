@@ -228,18 +228,9 @@ not an incremental addition, so it's a bigger bet than PSI.
 ## Part 4: Usability and ergonomics
 
 Found by reading the actual keybinding code and docs, not by assuming.
-One real bug, plus a few consistent friction points.
+A few consistent friction points.
 
-### 1. The README's kill instructions are wrong
-
-`README.md:18-19` says "Kill processes with `k`" (and "vai Enter" — typo for
-"via"). The actual kill key is `x` — confirmed in both `main.go:337` and the
-in-app help text (`render.go:1036`). `k` is actually bound to cursor-up,
-vim-style (`state.go:265-267`). A new user reading the README and pressing
-`k` expecting a kill prompt just moves the cursor and gets confused. Two-line
-doc fix, not a design question — do this regardless of anything else below.
-
-### 2. No persisted configuration
+### 1. No persisted configuration
 
 Every launch resets to defaults — colorblind palette, last-monitored cgroup,
 active filter, `--narrow`, refresh interval all have to be re-specified via
@@ -250,19 +241,19 @@ state in `~/.config/htop/htoprc`. This is the one to prioritize for a
 genuine ergonomics project, since it compounds every single invocation
 rather than being a one-time surprise.
 
-### 3. No live refresh-interval adjustment
+### 2. No live refresh-interval adjustment
 
 The poll interval is fixed at launch (`boxtop 2` for a 2s interval) with no
 in-app key to speed up or slow down polling — `htop` binds `s` for this.
 Deciding mid-session you want faster updates means quitting and relaunching.
 
-### 4. No `NO_COLOR` / true monochrome mode
+### 3. No `NO_COLOR` / true monochrome mode
 
 `--colorblind` swaps to an alternate palette but there's no way to disable
 color entirely — some terminals/setups rely on the `NO_COLOR` env var
 convention, which boxtop doesn't check.
 
-### 5. Positional refresh-interval arg is a discoverability wart
+### 4. Positional refresh-interval arg is a discoverability wart
 
 The refresh interval is a bare positional argument (`boxtop 2`) rather than
 a flag, inconsistent with everything else being `--flag`-style. It's
@@ -276,12 +267,11 @@ already well done; no changes needed there.
 
 ### Suggested order
 
-1. README fix — trivial, fixes active user-facing misinformation.
-2. Persisted configuration — the highest-leverage ergonomics investment,
+1. Persisted configuration — the highest-leverage ergonomics investment,
    compounds on every run.
-3. Live refresh-interval adjustment — small, self-contained.
-4. `NO_COLOR` support — small, self-contained.
-5. Promote the positional interval arg to a flag (keeping the positional
+2. Live refresh-interval adjustment — small, self-contained.
+3. `NO_COLOR` support — small, self-contained.
+4. Promote the positional interval arg to a flag (keeping the positional
    form working for compatibility) — cosmetic, lowest priority.
 
 ## Part 5: Accessibility
@@ -328,7 +318,7 @@ exists.
 
 ### The one real gap, shared with Part 4
 
-No `NO_COLOR`/true monochrome mode (see Part 4 item 4). Worth framing as an
+No `NO_COLOR`/true monochrome mode (see Part 4 item 3). Worth framing as an
 accessibility concern too, not just ergonomics — this matters for no color
 perception at all, not only colorblindness.
 
@@ -347,7 +337,7 @@ case where the honest answer is "don't," not "here's how."
 
 1. Streaming plain-text mode (`--stream`) — the one genuinely high-value,
    buildable accessibility feature.
-2. `NO_COLOR` support — shared with Part 4 item 4; do it once, credit it to
+2. `NO_COLOR` support — shared with Part 4 item 3; do it once, credit it to
    both.
 3. Full UI i18n — deliberately not recommended; noted here so it isn't
    re-proposed without this context.
