@@ -15,33 +15,14 @@ what would take boxtop from good to genuinely amazing.
 
 ## Part 1: Reaping Rust's likely wins, in Go
 
-`PORTING.md` identified three plausible Rust wins over the current Go build:
-startup/TTFO, baseline memory floor, and tail-latency jitter under GC pressure
-(see its "Performance expectations" section). This part is the
-counter-proposal: concrete, reversible Go-side changes aimed at the same
-three wins, each validatable with the `boxbench` harness that already exists
-— no Rust required to find out whether they're worth it.
+`PORTING.md` identified plausible Rust wins over the current Go build,
+including startup/TTFO and baseline memory floor (see its "Performance
+expectations" section). This part is the counter-proposal: concrete,
+reversible Go-side changes aimed at the same wins, each validatable with the
+`boxbench` harness that already exists — no Rust required to find out
+whether they're worth it.
 
-### 1. Tail-latency jitter → GOGC / GOMEMLIMIT tuning
-
-Nothing in the codebase tunes GC today — no `debug.SetGCPercent` or
-`debug.SetMemoryLimit` call anywhere. For a small, bursty workload like this,
-trading a bounded amount of extra RSS for far fewer GC cycles directly
-attacks the "occasional visible frame hitch" PORTING.md attributed to Rust's
-lack of stop-the-world pauses.
-
-In `main.go`, near the top of `main()`:
-
-```go
-debug.SetGCPercent(400)        // or -1 (off) if paired with a memory limit
-debug.SetMemoryLimit(64 << 20) // soft RSS ceiling as a backstop
-```
-
-One-line, fully reversible, and measurable with `boxbench`'s existing
-`peakRSSKb`/CPU-time capture — the same validation loop PORTING.md proposed
-for a Rust POC.
-
-### 2. Steady-state allocation churn — mostly already done
+### 1. Steady-state allocation churn — mostly already done
 
 `proc.go`'s hot `/proc` scan path is already deliberately allocation-light:
 
@@ -61,7 +42,7 @@ This is already hand-doing, in Go, what PORTING.md credited Rust with getting
   than reused.
 - Fix what profiling actually shows, not what seems likely.
 
-### 3. Startup / TTFO
+### 2. Startup / TTFO
 
 `scripts/build.sh` already builds with `CGO_ENABLED=0 -trimpath
 -ldflags="-s -w"` — the standard fast-start/small-binary recipe. Importantly,
@@ -75,9 +56,6 @@ Remaining levers:
 - **PGO** (`go build -pgo=auto`, available since Go 1.21; repo is on 1.25):
   feed it a profile from a `boxbench` run. No code changes, improves inlining
   across startup and hot paths.
-- **`runtime.GOMAXPROCS(n)`** capped low early in `main()` — boxtop is
-  single-user-interactive and doesn't need every core; shaves a bit of
-  scheduler init on big multi-core hosts. Smaller effect than the above two.
 - Confirm where TTFO actually goes before optimizing further: it may be
   dominated by `tcell.Screen.Init()`'s terminfo lookup rather than Go runtime
   init, in which case none of the Go-runtime knobs above touch it, and
@@ -86,11 +64,10 @@ Remaining levers:
 
 ### Suggested order
 
-1. Add the GOGC/GOMEMLIMIT change (cheapest, most directly matches the
-   "jitter" claim).
-2. Run `boxbench` before/after to get real numbers.
-3. Decide whether TTFO/RSS are still worth chasing via PGO/profiling based on
-   those results.
+1. Profile allocation churn and TTFO first — `GODEBUG=gctrace=1`, `go tool
+   pprof`, and a `boxbench` trace — rather than assuming where the cost is.
+2. Decide whether PGO or further allocation work is worth chasing based on
+   what profiling actually shows.
 
 If the resulting numbers land close to what PORTING.md estimated for Rust,
 that's a stronger argument against the port than PORTING.md itself makes.
@@ -151,27 +128,13 @@ profiling shows tick latency is actually a problem at realistic scale — it
 adds real complexity (buffer-per-worker, ordering for stable sort) for a
 cost that today is "likely a wash" per Part 1's analysis.
 
-### Tooling/hardening
-
-CI currently runs only `gofmt` + `go vet` (`ci.yml`) — no
-`golangci-lint`/`staticcheck`. Given how much of this codebase's correctness
-rides on hand-managed buffer lifetimes and unsafe string aliasing,
-`staticcheck` plus `gosec` (flags unsafe/syscall misuse specifically) would
-catch a class of regression that manual review might miss as the codebase
-grows. Also minor: CI pins `go-version: '1.21'` while `go.mod` declares
-`go 1.25.0` — it likely works today via Go's toolchain auto-download, but
-pointing it at `go-version-file: go.mod` would make that explicit instead of
-implicit.
-
 ### Suggested order
 
 1. SIGTERM/SIGHUP handler in `run()` — small, concrete, fixes a real
    user-visible bug.
-2. `golangci-lint` (staticcheck + gosec) in CI — cheap, catches future
-   regressions in the unsafe/buffer-reuse code automatically.
-3. Fuzz tests for the `/proc`/cgroup parsers.
-4. Goroutine panic recovery shim — defense in depth, lower priority.
-5. Parallel `/proc` scan — only if profiling on a high-process-count host
+2. Fuzz tests for the `/proc`/cgroup parsers.
+3. Goroutine panic recovery shim — defense in depth, lower priority.
+4. Parallel `/proc` scan — only if profiling on a high-process-count host
    shows it's actually needed.
 
 ## Part 3: Feature wins

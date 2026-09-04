@@ -15,7 +15,7 @@ import (
 // bench_test.go) count times per benchmark and averages each name's
 // repeats into one BenchmarkStat.
 func runGoBenchmarks(dir string, count int) ([]BenchmarkStat, error) {
-	cmd := exec.Command("go", "test", "-run=^$", "-bench=.", "-benchmem", "-count="+strconv.Itoa(count), ".")
+	cmd := exec.Command("go", "test", "-run=^$", "-bench=.", "-benchmem", "-count="+strconv.Itoa(count), ".") //nolint:gosec // G204: boxbench is a local dev harness that inherently shells out to `go`
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -35,7 +35,7 @@ func runGoBenchmarks(dir string, count int) ([]BenchmarkStat, error) {
 // plain dev build CONTRIBUTING.md documents (kept symbols/debug info —
 // this is a local measurement tool, not a release artifact).
 func buildBoxtop(dir, outPath string) error {
-	cmd := exec.Command("go", "build", "-o", outPath, ".")
+	cmd := exec.Command("go", "build", "-o", outPath, ".") //nolint:gosec // G204: boxbench is a local dev harness that inherently shells out to `go`
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -59,7 +59,7 @@ type processSample struct {
 // peak RSS/CPU time via getrusage (the same data `/usr/bin/time -v`
 // reports), so no /proc polling is needed.
 func runProcessOnce(binPath string, intervalSeconds float64) (processSample, error) {
-	cmd := exec.Command(binPath, "-n", strconv.FormatFloat(intervalSeconds, 'f', -1, 64))
+	cmd := exec.Command(binPath, "-n", strconv.FormatFloat(intervalSeconds, 'f', -1, 64)) //nolint:gosec // G204: binPath is the boxtop binary boxbench itself just built
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return processSample{}, err
@@ -167,7 +167,7 @@ func gitLabel(dir string) string {
 }
 
 func runGit(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", args...) //nolint:gosec // G204: boxbench is a local dev harness that inherently shells out to `git`
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -190,7 +190,7 @@ func tempBoxtopBinary(dir string) (path string, cleanup func(), err error) {
 	if err != nil {
 		return "", nil, err
 	}
-	cleanup = func() { os.RemoveAll(tmpDir) }
+	cleanup = func() { _ = os.RemoveAll(tmpDir) }
 
 	binPath := tmpDir + "/boxtop"
 	if err := buildBoxtop(dir, binPath); err != nil {

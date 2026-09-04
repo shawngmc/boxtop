@@ -184,14 +184,14 @@ func readProcFile(path string, buf []byte) (data, newBuf []byte, ok bool) {
 			continue
 		}
 		if err != nil {
-			syscall.Close(fd)
+			_ = syscall.Close(fd)
 			return nil, buf, false
 		}
 		if n == 0 {
 			break
 		}
 	}
-	syscall.Close(fd)
+	_ = syscall.Close(fd)
 	return buf[:total], buf, true
 }
 
@@ -202,7 +202,7 @@ func bytesToStr(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
-	return unsafe.String(&b[0], len(b))
+	return unsafe.String(&b[0], len(b)) //nolint:gosec // G103: audited above; b is never retained or mutated past this call
 }
 
 // readStatNameCPU reads /proc/<pid>/stat ONCE and returns the short kernel

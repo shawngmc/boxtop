@@ -271,7 +271,7 @@ func printCgroupList(w io.Writer, host cgroupHostInfo, statuses []cgroupStatus) 
 	for _, st := range statuses {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", st.name, formatMemCurrent(st), formatMemLimit(st), formatCPULimit(st))
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 // firstLineWithPrefix returns the first line of s beginning with prefix,

@@ -168,8 +168,8 @@ func TestDirentPID(t *testing.T) {
 	makeRec := func(name string) []byte {
 		reclen := direntNameOffset + len(name) + 1 // +1: NUL terminator
 		rec := make([]byte, reclen)
-		rec[direntReclenOffset] = byte(reclen)
-		rec[direntReclenOffset+1] = byte(reclen >> 8)
+		rec[direntReclenOffset] = byte(reclen)        //nolint:gosec // G115: reclen is a short test name length, well under 65536
+		rec[direntReclenOffset+1] = byte(reclen >> 8) //nolint:gosec // G115: reclen is a short test name length, well under 65536
 		copy(rec[direntNameOffset:], name)
 		return rec
 	}

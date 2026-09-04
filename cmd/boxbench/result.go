@@ -67,11 +67,11 @@ func saveResult(path string, r Result) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, 0o600)
 }
 
 func loadResult(path string) (Result, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is a boxbench CLI argument, not untrusted external input
 	if err != nil {
 		return Result{}, err
 	}

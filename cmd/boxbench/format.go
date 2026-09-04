@@ -23,7 +23,7 @@ func printResultSummary(w io.Writer, r Result) {
 	for _, b := range r.Benchmarks {
 		fmt.Fprintf(tw, "  %s\t%.1f\t%.1f\t%.2f\n", b.Name, b.NsPerOp, b.BytesPerOp, b.AllocsPerOp)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	fmt.Fprintf(w, "\nReal process (%d runs, boxtop -n %g):\n", r.Process.Runs, r.Process.IntervalSeconds)
 	tw = newTabwriter(w)
@@ -32,7 +32,7 @@ func printResultSummary(w io.Writer, r Result) {
 	printProcessRow(tw, "time to first output (ms)", r.Process.TimeToFirstOutputMs)
 	printProcessRow(tw, "peak RSS (KB)", r.Process.PeakRSSKb)
 	printProcessRow(tw, "cpu time (ms)", r.Process.CPUTimeMs)
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 func printProcessRow(tw *tabwriter.Writer, label string, s MetricStats) {
@@ -68,7 +68,7 @@ func printComparison(w io.Writer, a, b Result) {
 			printCompareRow(tw, "    allocs/op", ab.AllocsPerOp, bb.AllocsPerOp)
 		}
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	fmt.Fprintln(w, "\nReal process (median of each side's runs):")
 	tw = newTabwriter(w)
@@ -77,7 +77,7 @@ func printComparison(w io.Writer, a, b Result) {
 	printCompareRow(tw, "time to first output (ms)", a.Process.TimeToFirstOutputMs.Median, b.Process.TimeToFirstOutputMs.Median)
 	printCompareRow(tw, "peak RSS (KB)", a.Process.PeakRSSKb.Median, b.Process.PeakRSSKb.Median)
 	printCompareRow(tw, "cpu time (ms)", a.Process.CPUTimeMs.Median, b.Process.CPUTimeMs.Median)
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 func printCompareRow(tw *tabwriter.Writer, label string, av, bv float64) {

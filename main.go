@@ -9,6 +9,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"syscall"
 	"time"
@@ -20,6 +22,17 @@ import (
 var version = "dev"
 
 func main() {
+	// boxtop's poll loop is small and bursty; trading a bounded amount of
+	// extra RSS for far fewer GC cycles avoids the occasional stop-the-world
+	// hitch showing up as a visible frame stall.
+	debug.SetGCPercent(400)
+	debug.SetMemoryLimit(64 << 20)
+
+	// Single-user-interactive tool with no goroutine fan-out — it doesn't
+	// need every core, and capping this shaves scheduler init on big
+	// multi-core hosts.
+	runtime.GOMAXPROCS(2)
+
 	var colorblind, showVersion, nonInteractive, listCgroupsFlag, narrow bool
 	var filter, cgroupOverride string
 	flag.BoolVar(&colorblind, "colorblind", false, "use the colorblind-friendly palette")

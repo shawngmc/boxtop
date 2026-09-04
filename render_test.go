@@ -46,16 +46,13 @@ func testFrameData(procs []Process) frameData {
 }
 
 // rowText reconstructs the visible text of screen row y by reading back
-// every cell drawFrame wrote via SetContent (GetContent reads the pending
-// "back" buffer, so no Show()/Sync() is needed first).
+// every cell drawFrame wrote via SetContent (Get reads the pending "back"
+// buffer, so no Show()/Sync() is needed first).
 func rowText(screen tcell.Screen, w, y int) string {
 	var b strings.Builder
 	for x := 0; x < w; x++ {
-		r, _, _, _ := screen.GetContent(x, y)
-		if r == 0 {
-			r = ' '
-		}
-		b.WriteRune(r)
+		s, _, _ := screen.Get(x, y)
+		b.WriteString(s)
 	}
 	return b.String()
 }
@@ -76,7 +73,7 @@ func findRow(screen tcell.Screen, w, h int, needle string) (y int, ok bool) {
 // fixed-width PID field every process row starts with) has the reverse-video
 // attribute drawFrame applies to the cursor row.
 func rowReversed(screen tcell.Screen, y int) bool {
-	_, _, style, _ := screen.GetContent(1, y)
+	_, style, _ := screen.Get(1, y)
 	_, _, attr := style.Decompose()
 	return attr&tcell.AttrReverse != 0
 }
@@ -207,7 +204,7 @@ func TestDrawFrameFooterKillConfirmAndStatus(t *testing.T) {
 	if !ok {
 		t.Fatalf("kill-confirm footer text not found on screen")
 	}
-	_, _, style, _ := screen.GetContent(1, y)
+	_, style, _ := screen.Get(1, y)
 	fg, _, attr := style.Decompose()
 	if attr&tcell.AttrBold == 0 {
 		t.Error("kill-confirm footer is not bold")
@@ -437,15 +434,15 @@ func TestDrawBarPartialCell(t *testing.T) {
 		t.Errorf("drawBar partial-cell row = %q, want %q", got, want)
 	}
 
-	_, _, filledStyle, _ := screen.GetContent(0, 0)
+	_, filledStyle, _ := screen.Get(0, 0)
 	if fg, _, _ := filledStyle.Decompose(); fg == tcell.ColorDefault {
 		t.Error("filled bar cell has no distinct gradient foreground color")
 	}
-	_, _, boundaryStyle, _ := screen.GetContent(5, 0)
+	_, boundaryStyle, _ := screen.Get(5, 0)
 	if fg, _, _ := boundaryStyle.Decompose(); fg == tcell.ColorDefault {
 		t.Error("boundary (partial) bar cell has no distinct gradient foreground color")
 	}
-	_, _, emptyStyle, _ := screen.GetContent(6, 0)
+	_, emptyStyle, _ := screen.Get(6, 0)
 	if emptyStyle != tcell.StyleDefault {
 		t.Errorf("empty bar cell style = %v, want tcell.StyleDefault (no explicit color)", emptyStyle)
 	}
@@ -470,17 +467,17 @@ func TestDrawMeterBracketsUncolored(t *testing.T) {
 		t.Fatalf("meter row %q missing bar brackets", string(row))
 	}
 
-	_, _, openStyle, _ := screen.GetContent(openIdx, 0)
+	_, openStyle, _ := screen.Get(openIdx, 0)
 	if openStyle != tcell.StyleDefault {
 		t.Errorf("opening bracket style = %v, want tcell.StyleDefault (no explicit color)", openStyle)
 	}
-	_, _, closeStyle, _ := screen.GetContent(closeIdx, 0)
+	_, closeStyle, _ := screen.Get(closeIdx, 0)
 	if closeStyle != tcell.StyleDefault {
 		t.Errorf("closing bracket style = %v, want tcell.StyleDefault (no explicit color)", closeStyle)
 	}
 
 	pctIdx := closeIdx + 2 // "] " then the percentage text
-	_, _, pctStyle, _ := screen.GetContent(pctIdx, 0)
+	_, pctStyle, _ := screen.Get(pctIdx, 0)
 	if fg, _, _ := pctStyle.Decompose(); fg == tcell.ColorDefault {
 		t.Error("percentage text has no distinct gradient foreground color")
 	}
@@ -494,23 +491,23 @@ func TestDrawSparklineColorsPerSample(t *testing.T) {
 	// Only 2 of the 5 requested cells have samples, so the sparkline
 	// right-aligns them: 3 blank padding cells, then the two samples.
 	for x := 0; x < 3; x++ {
-		r, _, style, _ := screen.GetContent(x, 0)
-		if r != ' ' || style != emptyBarStyle {
-			t.Errorf("padding cell %d = %q/%v, want blank/emptyBarStyle", x, r, style)
+		s, style, _ := screen.Get(x, 0)
+		if s != " " || style != emptyBarStyle {
+			t.Errorf("padding cell %d = %q/%v, want blank/emptyBarStyle", x, s, style)
 		}
 	}
 
-	r, _, style, _ := screen.GetContent(3, 0)
-	if r != '▁' {
-		t.Errorf("first sample glyph = %q, want '▁' (frac 0)", r)
+	s, style, _ := screen.Get(3, 0)
+	if s != "▁" {
+		t.Errorf("first sample glyph = %q, want '▁' (frac 0)", s)
 	}
 	if fg, _, _ := style.Decompose(); fg == tcell.ColorDefault {
 		t.Error("first sample cell has no distinct gradient foreground color")
 	}
 
-	r, _, style, _ = screen.GetContent(4, 0)
-	if r != '█' {
-		t.Errorf("second sample glyph = %q, want '█' (frac 1)", r)
+	s, style, _ = screen.Get(4, 0)
+	if s != "█" {
+		t.Errorf("second sample glyph = %q, want '█' (frac 1)", s)
 	}
 	if fg, _, _ := style.Decompose(); fg == tcell.ColorDefault {
 		t.Error("second sample cell has no distinct gradient foreground color")

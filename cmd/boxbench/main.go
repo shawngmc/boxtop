@@ -56,7 +56,7 @@ func runCmd(args []string) error {
 	runs := fs.Int("runs", 7, "number of real boxtop process runs to sample")
 	benchCount := fs.Int("bench-count", 3, "go test -bench -count value")
 	interval := fs.Float64("interval", 0.05, "refresh interval in seconds passed to boxtop -n for each process run")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	const dir = "."
 
@@ -108,7 +108,7 @@ func runCmd(args []string) error {
 
 func compareCmd(args []string) error {
 	fs := flag.NewFlagSet("compare", flag.ExitOnError)
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if fs.NArg() != 2 {
 		return fmt.Errorf("usage: boxbench compare FILE1.json FILE2.json")
 	}

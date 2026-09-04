@@ -18,10 +18,6 @@ subsystem — new screen, new interaction model, or both).
 
 | ID | Task | Source | LoE | Value | Files touched |
 |---|---|---|---|---|---|
-| Q2 | `GOGC`/`GOMEMLIMIT` tuning | Part 1.1 | XS | Medium | `main.go` |
-| Q3 | `GOMAXPROCS` cap | Part 1.3 | XS | Low–Medium | `main.go` |
-| Q4 | CI: `go-version-file: go.mod` | Part 2 tooling | XS | Low | `ci.yml`, `release.yml` |
-| Q5 | CI: `golangci-lint` (staticcheck + gosec) | Part 2 tooling | S | Medium–High | `ci.yml`, new `.golangci.yml` |
 | F1 | SIGTERM/SIGHUP handler in `run()` | Part 2 stability | S | High (real user-visible bug) | `main.go` |
 | F2 | Goroutine panic-recovery shim | Part 2 stability | XS–S | Low–Medium | `main.go` |
 | F3 | Fuzz tests (`/proc`-stat, cgroup parsers) | Part 2 stability | S–M | Medium | `proc_test.go`, `cgroup_test.go` |
@@ -175,9 +171,6 @@ a separate task.
 Phases group work into what to actually pick up next, folding in the
 bundle guidance above. Within a phase, order is low-risk-first; across
 phases, later ones depend on earlier ones landing.
-
-**Phase 0 — quick wins.** Q2–Q5. Trivial, independent, no reason to delay
-any of them. Ship as a handful of small PRs, any order.
 
 **Phase 1 — foundational hardening.** F1, F2, F3, F4. F1 is the one
 genuine user-visible bug in the backlog; F4 (redaction) has no user-facing

@@ -513,12 +513,12 @@ func (s *monitorState) sendKillSignal(sig syscall.Signal) {
 // EPERM: not ours to signal) are unit-testable without actually sending a
 // real signal.
 func killResultMessage(pid int, name, sigName string, err error) string {
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		return fmt.Sprintf("Sent %s to PID %d (%s)", sigName, pid, name)
-	case err == syscall.ESRCH:
+	case syscall.ESRCH:
 		return fmt.Sprintf("PID %d (%s) no longer exists", pid, name)
-	case err == syscall.EPERM:
+	case syscall.EPERM:
 		return fmt.Sprintf("Permission denied signaling PID %d (%s)", pid, name)
 	default:
 		return fmt.Sprintf("Failed to signal PID %d (%s): %v", pid, name, err)
